@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+
+# Virtual environment
+.venv/
+
+# PyCharm
+.idea/
+
+# OS files
+.DS_Store
+
+# Excel files (prevent accidental data leaks)
+*.xlsx
+*.csv
+
+# Streamlit cache
+.streamlit/
+
+# Allow sample data needed for app
+!sample_data/PaceSmart_Model_vs_Excel_FINAL.xlsx

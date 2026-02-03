@@ -11,20 +11,21 @@ st.set_page_config(
 )
 
 st.title("📊 PaceSmart: Excel Pacing vs Predictive Model")
-st.caption("Why the model flags risk earlier than traditional Excel pacing")
+st.caption("Comparing reactive Excel pacing with forward-looking predictions")
 
 # =====================================================
-# LOAD DATA
+# CLOUD-SAFE DATA LOADING (IMPORTANT)
 # =====================================================
-BASE_DIR = r"C:\Users\nikkumar12\OneDrive - Publicis Groupe\Desktop\2026"
+BASE_DIR = os.path.dirname(__file__)           # folder where this file lives
+DATA_DIR = os.path.join(BASE_DIR, "sample_data")
 FILE_NAME = "PaceSmart_Model_vs_Excel_FINAL.xlsx"
-FILE_PATH = os.path.join(BASE_DIR, FILE_NAME)
+FILE_PATH = os.path.join(DATA_DIR, FILE_NAME)
 
-st.write("📂 Data source:")
+st.write("📂 Data source (repo relative path):")
 st.code(FILE_PATH)
 
 if not os.path.exists(FILE_PATH):
-    st.error("❌ Model output file not found. Please run the model script first.")
+    st.error("❌ Data file not found. Ensure it exists in /sample_data/")
     st.stop()
 
 df = pd.read_excel(FILE_PATH)
@@ -112,7 +113,7 @@ display_cols = [
 
 st.dataframe(
     filtered[display_cols]
-    .style.apply(highlight_diff, axis=1),
+        .style.apply(highlight_diff, axis=1),
     use_container_width=True,
     height=520
 )
@@ -127,25 +128,26 @@ st.divider()
 st.subheader("🧠 What is Spend Volatility & Why the Model Uses It")
 
 st.markdown("""
-**Spend Volatility** measures how much a campaign’s daily spend **fluctuates from day to day**.
+**Spend Volatility** measures how much a campaign’s daily spend
+**fluctuates from day to day**.
 
 ### Why this matters
 - Two campaigns can look *On Track* in Excel today  
 - The one with **unstable daily spend** is far more likely to overspend or underspend later
 
 ### Excel vs Model
-- **Excel pacing** only checks *total spend till today*
-- **The model** also checks *how predictable the spend behavior is*
+- **Excel pacing** checks only cumulative spend till today  
+- **The model** also checks how *predictable* the spend behavior is
 
 ### Simple example
 - **Stable spend**: 1000 → 1020 → 980 → 1010 → 995  
-  → Low volatility → Lower risk
+  → Low volatility → Lower risk  
 - **Unstable spend**: 400 → 1800 → 600 → 2100 → 500  
-  → High volatility → Higher risk
+  → High volatility → Higher risk  
 
 ### How it’s calculated
-The model looks at the **last 5 days of spend** and measures how much it varies  
-(using standard deviation).
+The model looks at the **last 5 days of spend** and measures
+how much it varies (standard deviation).
 
 ### How to read this dashboard
 - **Low volatility + On Track** → Safe  
@@ -153,7 +155,7 @@ The model looks at the **last 5 days of spend** and measures how much it varies
 """)
 
 # =====================================================
-# FINAL NOTE
+# FOOTER
 # =====================================================
 st.divider()
 st.caption(
