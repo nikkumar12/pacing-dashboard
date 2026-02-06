@@ -1,53 +1,22 @@
-# ==============================
 # Python cache
-# ==============================
 __pycache__/
 *.pyc
-*.pyo
-*.pyd
 
-# ==============================
-# Virtual environments
-# ==============================
+# Virtual env
 .venv/
-venv/
-env/
 
-# ==============================
-# IDE / Editor files
-# ==============================
+# IDE
 .idea/
-.vscode/
 
-# ==============================
-# OS generated files
-# ==============================
-.DS_Store
-Thumbs.db
-
-# ==============================
-# Streamlit cache
-# ==============================
+# Streamlit
 .streamlit/
 
-# ==============================
-# Logs
-# ==============================
-*.log
-
-# ==============================
-# Raw data & Excel (BLOCKED)
-# ==============================
+# Block data files
 *.csv
-*.xls
 *.xlsx
 
-# ==============================
-# Allow ONLY final dashboard output
-# ==============================
+# Allow ONLY required Excel output
 !PaceSmart_ML_vs_Excel_Output.xlsx
 
-# ==============================
-# ML artifacts (DO NOT COMMIT)
-# ==============================
+# Block ML artifacts
 *.pkl
