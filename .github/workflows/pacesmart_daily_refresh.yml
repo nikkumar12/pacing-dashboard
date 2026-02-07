@@ -1,0 +1,4 @@
+name: PaceSmart Daily Refresh
+on:
+  schedule:
+    - cron: '30 0 * * *'
