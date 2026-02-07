@@ -1,4 +1,4 @@
-name: PaceSmart Daily Refresh
+name: PaceSmart Daily Refresh v2
 
 on:
   schedule:
