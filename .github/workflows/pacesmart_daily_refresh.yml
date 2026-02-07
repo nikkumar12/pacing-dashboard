@@ -1,4 +1,39 @@
 name: PaceSmart Daily Refresh
+
 on:
   schedule:
+    # Runs daily at 06:00 IST (00:30 UTC)
     - cron: '30 0 * * *'
+  workflow_dispatch:
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Run PaceSmart pipeline
+        run: |
+          python append_daily_raw_data.py
+          python build_excel_pacing.py
+          python model_forward_prediction.py
+          python "SINGLE PYTHON SCRIPT.py"
+
+      - name: Commit updated output
+        run: |
+          git config user.name "pacesmart-bot"
+          git config user.email "pacesmart-bot@users.noreply.github.com"
+          git add -f PaceSmart_ML_vs_Excel_Output.xlsx
+          git commit -m "Automated daily pacing refresh" || echo "No changes to commit"
+          git push
