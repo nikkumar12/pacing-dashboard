@@ -1,102 +1,49 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from datetime import datetime
 
 # ==================================================
-# PAGE CONFIG
+# STREAMLIT CONFIG
 # ==================================================
 st.set_page_config(
-    page_title="PaceSmart | Excel vs ML Pacing",
+    page_title="PaceSmart | Predictive Pacing",
     layout="wide"
 )
 
 # ==================================================
-# FILE PATH
+# FILE PATH (GitHub / Streamlit Cloud friendly)
 # ==================================================
 DATA_FILE = "PaceSmart_ML_vs_Excel_Output.xlsx"
 
 # ==================================================
-# LOAD DATA (NO AGGRESSIVE CACHE)
+# LOAD DATA
 # ==================================================
+@st.cache_data(show_spinner=False)
 def load_data():
     comparison = pd.read_excel(DATA_FILE, sheet_name="Excel_vs_ML")
     summary = pd.read_excel(DATA_FILE, sheet_name="Exec_Summary")
-    return comparison, summary
 
-df, summary = load_data()
+    # Optional refresh info (if present)
+    refresh_time = None
+    try:
+        refresh_df = pd.read_excel(DATA_FILE, sheet_name="Refresh_Info")
+        refresh_time = refresh_df.loc[0, "Value"]
+    except Exception:
+        refresh_time = "Unknown (UTC)"
+
+    return comparison, summary, refresh_time
+
+
+df, summary, last_refresh_utc = load_data()
 
 # ==================================================
-# DERIVED FIELDS
+# DERIVED FIELDS (SAFE)
 # ==================================================
-
-# Campaign live / ended
 df["Campaign_Status"] = np.where(df["Days_Left"] > 0, "LIVE", "ENDED")
-
-# Remaining budget
 df["Remaining_Budget"] = df["Total_Budget"] - df["Spend_to_Date"]
 
-# Pace ratio (Excel logic)
-df["Pace_Ratio"] = np.where(
-    df["Expected_Spend_Till_Date"] > 0,
-    df["Spend_to_Date"] / df["Expected_Spend_Till_Date"],
-    0
-)
-
 # ==================================================
-# ML CONFIDENCE (SAFE FALLBACK)
-# ==================================================
-if "ML_Confidence_%" not in df.columns:
-    df["ML_Confidence_%"] = np.where(
-        df["ML_Prediction"] == "Overdelivered",
-        np.clip((df["Budget_At_Risk"] / df["Total_Budget"]) * 100, 55, 85),
-        np.where(
-            df["ML_Prediction"] == "Underdelivered",
-            np.clip((df["Remaining_Budget"] / df["Total_Budget"]) * 100, 55, 85),
-            60
-        )
-    ).round(1)
-
-# ==================================================
-# ML EXPLANATION (PLAIN ENGLISH)
-# ==================================================
-def explain_campaign(row):
-    reasons = []
-
-    if row["Pace_Ratio"] > 1.1:
-        reasons.append("Spending faster than ideal pace")
-
-    if row["Days_Left"] > 0 and row["Pace_Ratio"] > 1 and row["Days_Elapsed"] < (row["Days_Elapsed"] + row["Days_Left"]) * 0.4:
-        reasons.append("High spend early in flight")
-
-    if row["Remaining_Budget"] > 0.4 * row["Total_Budget"]:
-        reasons.append("Large portion of budget still exposed")
-
-    if row["ML_Confidence_%"] >= 75:
-        reasons.append("Strong historical risk pattern match")
-
-    return "; ".join(reasons) if reasons else "No abnormal risk pattern detected"
-
-df["Why_ML_Flagged"] = df.apply(explain_campaign, axis=1)
-
-# ==================================================
-# RECOMMENDED ACTION
-# ==================================================
-def recommended_action(row):
-    if row["Campaign_Status"] == "ENDED":
-        return "No action – campaign ended"
-    if row["ML_Prediction"] == "Overdelivered" and row["ML_Confidence_%"] >= 75:
-        return "Reduce daily caps immediately"
-    if row["ML_Prediction"] == "Underdelivered" and row["ML_Confidence_%"] >= 75:
-        return "Increase delivery"
-    if row["ML_Prediction"] != "On Track":
-        return "Monitor closely"
-    return "No action needed"
-
-df["Recommended_Action"] = df.apply(recommended_action, axis=1)
-
-# ==================================================
-# EXEC METRICS
+# EXECUTIVE METRICS
 # ==================================================
 total_campaigns = len(df)
 live_campaigns = (df["Campaign_Status"] == "LIVE").sum()
@@ -110,11 +57,6 @@ budget_at_risk = df["Budget_At_Risk"].sum()
 ml_accuracy = summary.loc[
     summary["Metric"] == "ML Validation Accuracy", "Value"
 ].values[0]
-
-# ==================================================
-# LAST REFRESH TIMESTAMP
-# ==================================================
-last_updated = datetime.now().strftime("%d %b %Y, %H:%M IST")
 
 # ==================================================
 # SIDEBAR NAVIGATION
@@ -134,7 +76,7 @@ page = st.sidebar.radio(
 # ==================================================
 if page == "Executive Summary":
     st.title("📊 PaceSmart – Executive Summary")
-    st.caption(f"🕒 Last refreshed: {last_updated}")
+    st.caption(f"🕒 Last refreshed: {last_refresh_utc}")
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Total Campaigns", total_campaigns)
@@ -150,13 +92,14 @@ if page == "Executive Summary":
 
     st.markdown("""
 ### What this means
-- **Excel pacing** shows where campaigns stand today  
-- **ML pacing** predicts where campaigns are likely to end  
-- ML flags **risk early**, not after damage is done
+- **Excel pacing** shows where campaigns stand *today*
+- **ML pacing** predicts where campaigns are likely to *end*
+- ML flags risk **earlier**, before Excel thresholds are crossed
+- Confidence comes from **historical campaign patterns**
 """)
 
 # ==================================================
-# PAGE 2: EXCEL ONLY
+# PAGE 2: EXCEL ONLY VIEW
 # ==================================================
 elif page == "Excel Pacing (No ML)":
     st.title("📘 Excel Pacing (Rule-Based Only)")
@@ -179,10 +122,10 @@ elif page == "Excel Pacing (No ML)":
     )
 
 # ==================================================
-# PAGE 3: EXCEL vs ML
+# PAGE 3: EXCEL vs ML VIEW
 # ==================================================
 elif page == "Excel vs ML Decision View":
-    st.title("⚖️ Excel vs ML – Actionable Comparison")
+    st.title("⚖️ Excel vs ML – Decision Comparison")
 
     st.dataframe(
         df[[
@@ -194,10 +137,8 @@ elif page == "Excel vs ML Decision View":
             "Remaining_Budget",
             "Pacing_Status",
             "ML_Prediction",
-            "ML_Confidence_%",
             "Budget_At_Risk",
-            "Why_ML_Flagged",
-            "Recommended_Action"
+            "ML_Early_Warning"
         ]].sort_values("Budget_At_Risk", ascending=False),
         use_container_width=True
     )
@@ -210,15 +151,12 @@ elif page == "How ML Works & Why It Helps":
 
     st.markdown("""
 ### How the ML model works
-- Trained on **ended campaigns**
-- Learns patterns that lead to:
-  - Overspend
-  - Underspend
-- Uses:
+- Trained on **ended historical campaigns**
+- Learns patterns of:
   - Spend velocity
-  - Flight progress
-  - Budget exposure
-  - Historical outcomes
+  - Early pacing behavior
+  - Budget exhaustion trends
+- Predicts **final outcome**, not just today’s status
 
 ### Why Excel misses risk
 - Assumes linear spend
@@ -226,18 +164,21 @@ elif page == "How ML Works & Why It Helps":
 - Cannot learn from history
 
 ### What ML adds
-- Predicts **final outcome**
-- Flags risk **earlier**
-- Prioritizes action
-- Reduces preventable budget loss
+- Early warnings
+- Risk prioritization
+- Preventable budget loss detection
 
-### ML Confidence Score
-- Represents strength of historical similarity
-- Higher score = stronger pattern match
+### Confidence & accuracy
+- Accuracy shown is validation accuracy
+- Predictions are **probabilistic**, not rule-based
+- ML complements Excel — it does not replace it
 """)
 
 # ==================================================
 # FOOTER
 # ==================================================
 st.markdown("---")
-st.caption("PaceSmart augments Excel with predictive intelligence. Final decisions remain human-led.")
+st.caption(
+    "PaceSmart combines Excel discipline with machine learning foresight. "
+    "Final decisions remain human-led."
+)
