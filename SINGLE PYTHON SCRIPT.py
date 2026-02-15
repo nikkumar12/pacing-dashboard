@@ -23,7 +23,7 @@ meta = pd.read_excel(RAW_FILE, sheet_name="Campaign_Metadata")
 excel_pacing = pd.read_excel(EXCEL_FILE, sheet_name="Pacing")
 
 # ==================================================
-# DATE NORMALIZATION (NO FORMAT CHANGE)
+# DATE NORMALIZATION
 # ==================================================
 daily["Date"] = pd.to_datetime(daily["Date"]).dt.normalize()
 meta["Flight_Start_Date"] = pd.to_datetime(meta["Flight_Start_Date"]).dt.normalize()
@@ -38,10 +38,9 @@ YESTERDAY = (
 daily = daily[daily["Date"] <= YESTERDAY]
 
 # ==================================================
-# STEP 1: BUILD ML TRAINING DATA (ENDED CAMPAIGNS)
+# BUILD ML TRAINING DATA (ENDED)
 # ==================================================
 rows = []
-
 ended = meta[meta["Flight_End_Date"] < YESTERDAY]
 
 for _, c in ended.iterrows():
@@ -90,7 +89,7 @@ ml_df = pd.DataFrame(rows, columns=[
 ])
 
 # ==================================================
-# STEP 2: TRAIN ML MODEL
+# TRAIN ML MODEL
 # ==================================================
 le_dsp = LabelEncoder()
 le_label = LabelEncoder()
@@ -116,12 +115,12 @@ model = RandomForestClassifier(
     max_depth=6,
     random_state=42
 )
-model.fit(X_train, y_train)
 
+model.fit(X_train, y_train)
 ml_accuracy = accuracy_score(y_test, model.predict(X_test))
 
 # ==================================================
-# STEP 3: APPLY ML TO LIVE CAMPAIGNS
+# APPLY ML TO LIVE
 # ==================================================
 live = meta[meta["Flight_End_Date"] >= YESTERDAY]
 pred_rows = []
@@ -160,26 +159,23 @@ for _, c in live.iterrows():
 ml_preds = pd.DataFrame(pred_rows, columns=["Campaign_ID","ML_Prediction"])
 
 # ==================================================
-# STEP 4: EXCEL vs ML MERGE (SAFE)
+# MERGE
 # ==================================================
 comparison = (
     excel_pacing
-    .merge(meta[["Campaign_ID","Total_Budget"]], on="Campaign_ID", how="left")
+    .merge(meta[["Campaign_ID","Total_Budget","Flight_End_Date"]], on="Campaign_ID", how="left")
     .merge(ml_preds, on="Campaign_ID", how="left")
 )
 
-# --------------------------------------------------
-# SAFETY: GUARANTEE Total_Budget COLUMN
-# --------------------------------------------------
-if "Total_Budget" not in comparison.columns:
-    candidates = [c for c in comparison.columns if "Total_Budget" in c]
-    if candidates:
-        comparison["Total_Budget"] = comparison[candidates[0]]
-    else:
-        raise ValueError("Total_Budget missing after merge")
+# Add lifecycle
+comparison["Campaign_Lifecycle"] = np.where(
+    comparison["Flight_End_Date"] >= YESTERDAY,
+    "LIVE",
+    "ENDED"
+)
 
 # ==================================================
-# STEP 5: RISK CALCULATIONS
+# RISK CALCULATIONS
 # ==================================================
 comparison["Budget_At_Risk"] = np.where(
     comparison["ML_Prediction"] == "Overdelivered",
@@ -195,7 +191,25 @@ comparison["ML_Early_Warning"] = np.where(
 )
 
 # ==================================================
-# STEP 6: FEATURE IMPORTANCE
+# EXCEL vs ML DISAGREEMENT
+# ==================================================
+comparison["Excel_vs_ML_Disagree"] = np.where(
+    (
+        (comparison["Pacing_Status"] == "On Track") &
+        (comparison["ML_Prediction"] != "On Track")
+    ) |
+    (
+        (comparison["Pacing_Status"] != "On Track") &
+        (comparison["ML_Prediction"] == "On Track")
+    ),
+    "YES",
+    "NO"
+)
+
+disagreement_count = (comparison["Excel_vs_ML_Disagree"] == "YES").sum()
+
+# ==================================================
+# FEATURE IMPORTANCE
 # ==================================================
 feature_importance = pd.DataFrame({
     "Feature": features,
@@ -203,23 +217,34 @@ feature_importance = pd.DataFrame({
 }).sort_values("Importance", ascending=False)
 
 # ==================================================
-# STEP 7: WRITE OUTPUT (UNCHANGED CONTRACT)
+# EXEC SUMMARY
+# ==================================================
+exec_summary = pd.DataFrame({
+    "Metric": [
+        "ML Validation Accuracy",
+        "Total Budget At Risk",
+        "Excel vs ML Disagreements",
+        "Live Campaigns",
+        "Ended Campaigns",
+        "LAST_REFRESH_UTC"
+    ],
+    "Value": [
+        round(ml_accuracy, 3),
+        round(comparison["Budget_At_Risk"].sum(), 2),
+        disagreement_count,
+        (comparison["Campaign_Lifecycle"] == "LIVE").sum(),
+        (comparison["Campaign_Lifecycle"] == "ENDED").sum(),
+        datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    ]
+})
+
+# ==================================================
+# WRITE OUTPUT
 # ==================================================
 with pd.ExcelWriter(OUTPUT_FILE, engine="openpyxl") as writer:
     comparison.to_excel(writer, sheet_name="Excel_vs_ML", index=False)
     feature_importance.to_excel(writer, sheet_name="Feature_Importance", index=False)
-    pd.DataFrame({
-        "Metric": [
-            "ML Validation Accuracy",
-            "Total Budget At Risk",
-            "LAST_REFRESH_UTC"
-        ],
-        "Value": [
-            round(ml_accuracy, 3),
-            round(comparison["Budget_At_Risk"].sum(), 2),
-            datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-        ]
-    }).to_excel(writer, sheet_name="Exec_Summary", index=False)
+    exec_summary.to_excel(writer, sheet_name="Exec_Summary", index=False)
 
 print("✅ PaceSmart pipeline executed successfully")
 print(f"📂 Output written to: {OUTPUT_FILE}")
