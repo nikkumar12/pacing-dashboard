@@ -23,7 +23,7 @@ meta = pd.read_excel(RAW_FILE, sheet_name="Campaign_Metadata")
 excel_pacing = pd.read_excel(EXCEL_FILE, sheet_name="Pacing")
 
 # ==================================================
-# DATE NORMALIZATION (SAFE)
+# DATE NORMALIZATION (SAFE / TZ CONSISTENT)
 # ==================================================
 daily["Date"] = pd.to_datetime(daily["Date"], errors="coerce").dt.normalize()
 meta["Flight_Start_Date"] = pd.to_datetime(meta["Flight_Start_Date"], errors="coerce").dt.normalize()
@@ -38,13 +38,14 @@ YESTERDAY = (
 daily = daily[daily["Date"] <= YESTERDAY]
 
 # ==================================================
-# BUILD ML TRAINING DATA (ENDED CAMPAIGNS)
+# STEP 1: BUILD ML TRAINING DATA (ENDED CAMPAIGNS)
 # ==================================================
 rows = []
 
 ended = meta[meta["Flight_End_Date"] < YESTERDAY]
 
 for _, c in ended.iterrows():
+
     cid = c["Campaign_ID"]
     dsp = c["DSP"]
     budget = float(c["Total_Budget"])
@@ -90,7 +91,7 @@ ml_df = pd.DataFrame(rows, columns=[
 ])
 
 # ==================================================
-# TRAIN ML MODEL
+# STEP 2: TRAIN MODEL
 # ==================================================
 le_dsp = LabelEncoder()
 le_label = LabelEncoder()
@@ -121,12 +122,13 @@ model.fit(X_train, y_train)
 ml_accuracy = accuracy_score(y_test, model.predict(X_test))
 
 # ==================================================
-# APPLY ML TO LIVE CAMPAIGNS
+# STEP 3: APPLY ML TO LIVE CAMPAIGNS
 # ==================================================
 live = meta[meta["Flight_End_Date"] >= YESTERDAY]
 pred_rows = []
 
 for _, c in live.iterrows():
+
     cid = c["Campaign_ID"]
     dsp = c["DSP"]
     budget = float(c["Total_Budget"])
@@ -160,41 +162,49 @@ for _, c in live.iterrows():
 ml_preds = pd.DataFrame(pred_rows, columns=["Campaign_ID","ML_Prediction"])
 
 # ==================================================
-# MERGE EXCEL + META + ML (SAFE)
+# STEP 4: SAFE MERGE (NO COLUMN BREAK)
 # ==================================================
 comparison = (
     excel_pacing
     .merge(
-        meta[[
-            "Campaign_ID",
-            "Total_Budget",
-            "Flight_Start_Date",
-            "Flight_End_Date"
-        ]],
+        meta[
+            ["Campaign_ID", "Total_Budget", "Flight_Start_Date", "Flight_End_Date"]
+        ],
         on="Campaign_ID",
-        how="left"
+        how="left",
+        suffixes=("", "_meta")
     )
     .merge(ml_preds, on="Campaign_ID", how="left")
 )
 
-# Ensure numeric budget
+# SAFE Total_Budget detection
+if "Total_Budget" not in comparison.columns:
+    candidates = [c for c in comparison.columns if "Total_Budget" in c]
+    if candidates:
+        comparison["Total_Budget"] = comparison[candidates[0]]
+    else:
+        raise ValueError("Total_Budget missing after merge.")
+
 comparison["Total_Budget"] = comparison["Total_Budget"].astype(float)
 
-# Campaign Status
+# ==================================================
+# STEP 5: CAMPAIGN STATUS
+# ==================================================
 comparison["Campaign_Status"] = np.where(
     comparison["Flight_End_Date"] >= YESTERDAY,
     "LIVE",
     "ENDED"
 )
 
-# Budget at risk
+# ==================================================
+# STEP 6: RISK CALCULATIONS
+# ==================================================
 comparison["Budget_At_Risk"] = np.where(
     comparison["ML_Prediction"] == "Overdelivered",
     comparison["Total_Budget"] - comparison["Spend_to_Date"],
     0
 )
 
-# ML Early Warning
 comparison["ML_Early_Warning"] = np.where(
     (comparison["ML_Prediction"].isin(["Overdelivered","Underdelivered"])) &
     (~comparison["Pacing_Status"].isin(["Overpacing","Underpacing"])),
@@ -202,15 +212,15 @@ comparison["ML_Early_Warning"] = np.where(
     "NO"
 )
 
-# Excel vs ML Disagreement
-comparison["Excel_ML_Disagree"] = np.where(
+# Excel vs ML disagreement
+comparison["Excel_vs_ML_Disagree"] = np.where(
     comparison["Pacing_Status"] != comparison["ML_Prediction"],
     "YES",
     "NO"
 )
 
 # ==================================================
-# FEATURE IMPORTANCE
+# STEP 7: FEATURE IMPORTANCE
 # ==================================================
 feature_importance = pd.DataFrame({
     "Feature": features,
@@ -218,31 +228,25 @@ feature_importance = pd.DataFrame({
 }).sort_values("Importance", ascending=False)
 
 # ==================================================
-# EXEC SUMMARY
+# STEP 8: EXEC SUMMARY
 # ==================================================
 exec_summary = pd.DataFrame({
     "Metric": [
         "ML Validation Accuracy",
-        "Total Campaigns",
-        "Live Campaigns",
-        "Ended Campaigns",
-        "Excel vs ML Disagreements",
         "Total Budget At Risk",
+        "Excel vs ML Disagreement Count",
         "LAST_REFRESH_UTC"
     ],
     "Value": [
         round(ml_accuracy, 3),
-        len(comparison),
-        (comparison["Campaign_Status"] == "LIVE").sum(),
-        (comparison["Campaign_Status"] == "ENDED").sum(),
-        (comparison["Excel_ML_Disagree"] == "YES").sum(),
         round(comparison["Budget_At_Risk"].sum(), 2),
+        (comparison["Excel_vs_ML_Disagree"] == "YES").sum(),
         datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     ]
 })
 
 # ==================================================
-# WRITE OUTPUT
+# STEP 9: WRITE OUTPUT
 # ==================================================
 with pd.ExcelWriter(OUTPUT_FILE, engine="openpyxl") as writer:
     comparison.to_excel(writer, sheet_name="Excel_vs_ML", index=False)
