@@ -1,30 +1,28 @@
 @echo off
-echo ======================================
-echo   PaceSmart Auto Refresh Started
-echo ======================================
+echo ====================================
+echo 🚀 PaceSmart Full Refresh Started
+echo ====================================
 
-cd C:\Users\nikkumar12\PyCharmMiscProject
-
-echo.
-echo Step 1: Generating variation raw data...
-C:\Users\nikkumar12\PyCharmMiscProject\.venv\Scripts\python.exe generate_variation_raw_data.py
+cd /d C:\Users\nikkumar12\PyCharmMiscProject
 
 echo.
-echo Step 2: Running ML + Excel pipeline...
-C:\Users\nikkumar12\PyCharmMiscProject\.venv\Scripts\python.exe "SINGLE PYTHON SCRIPT.py"
+echo 🔁 Step 1: Generating variation raw data...
+python generate_variation_raw_data.py
 
 echo.
-echo Step 3: Committing to Git...
+echo 📊 Step 2: Running Excel Pacing Generator...
+python "Excel Pacing Generator.py"
+
+echo.
+echo 🤖 Step 3: Running ML Script...
+python "SINGLE PYTHON SCRIPT.py"
+
+echo.
+echo 📤 Step 4: Pushing to GitHub...
 git add .
-git commit -m "Auto refresh pacing dashboard"
-
-echo.
-echo Step 4: Pushing to GitHub...
+git commit -m "Auto refresh - %date% %time%"
 git push origin main
 
 echo.
-echo ======================================
-echo   Dashboard Will Refresh Automatically
-echo ======================================
-
+echo ✅ DONE. Dashboard will refresh in 1–2 minutes.
 pause
