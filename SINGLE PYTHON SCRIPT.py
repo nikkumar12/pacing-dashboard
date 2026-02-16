@@ -38,7 +38,7 @@ YESTERDAY = (
 daily = daily[daily["Date"] <= YESTERDAY]
 
 # ==================================================
-# STEP 1: BUILD TRAINING DATA (ENDED CAMPAIGNS)
+# STEP 1: BUILD TRAINING DATA
 # ==================================================
 rows = []
 ended = meta[meta["Flight_End_Date"] < YESTERDAY]
@@ -67,7 +67,6 @@ for _, c in ended.iterrows():
     velocity_7d = d_mid.sort_values("Date").tail(7)["Spend"].mean()
     velocity_3d = d_mid.sort_values("Date").tail(3)["Spend"].mean()
 
-    # NEW INTELLIGENT FEATURES
     time_pct = days_elapsed / flight_days
     budget_pct = spend_mid / budget if budget > 0 else 0
     gap_pct = budget_pct - time_pct
@@ -173,3 +172,87 @@ ml_preds = pd.DataFrame(
     pred_rows,
     columns=["Campaign_ID","Predicted_Final_Deviation_%"]
 )
+
+# ==================================================
+# STEP 4: MERGE WITH EXCEL OUTPUT
+# ==================================================
+comparison = (
+    excel_pacing
+    .merge(
+        meta[[
+            "Campaign_ID",
+            "Flight_Start_Date",
+            "Flight_End_Date",
+            "Total_Budget",
+            "DSP"
+        ]],
+        on="Campaign_ID",
+        how="left",
+        suffixes=("", "_meta")
+    )
+    .merge(ml_preds, on="Campaign_ID", how="left")
+)
+
+if "Total_Budget_meta" in comparison.columns:
+    comparison["Total_Budget"] = comparison["Total_Budget_meta"]
+
+# ==================================================
+# STEP 5: RISK ENGINE
+# ==================================================
+comparison["Risk_Score"] = (
+    comparison["Predicted_Final_Deviation_%"].abs() / 20
+) * 100
+
+comparison["Risk_Score"] = comparison["Risk_Score"].clip(0, 100)
+
+comparison["Predicted_Impact_Amount"] = (
+    comparison["Predicted_Final_Deviation_%"] / 100
+) * comparison["Total_Budget"]
+
+conditions = [
+    comparison["Risk_Score"] >= 70,
+    comparison["Risk_Score"].between(40, 69),
+    comparison["Risk_Score"] < 40
+]
+
+choices = [
+    "CRITICAL – Immediate Action",
+    "MODERATE – Monitor Closely",
+    "LOW – Stable"
+]
+
+comparison["Risk_Level"] = np.select(
+    conditions,
+    choices,
+    default="LOW – Stable"
+)
+
+# ==================================================
+# FEATURE IMPORTANCE
+# ==================================================
+feature_importance = pd.DataFrame({
+    "Feature": features,
+    "Importance": model.feature_importances_
+}).sort_values("Importance", ascending=False)
+
+# ==================================================
+# WRITE OUTPUT FILE
+# ==================================================
+with pd.ExcelWriter(OUTPUT_FILE, engine="openpyxl") as writer:
+    comparison.to_excel(writer, sheet_name="Excel_vs_ML", index=False)
+    feature_importance.to_excel(writer, sheet_name="Feature_Importance", index=False)
+    pd.DataFrame({
+        "Metric": [
+            "ML Validation MAE",
+            "Total Predicted Impact",
+            "LAST_REFRESH_UTC"
+        ],
+        "Value": [
+            round(ml_mae, 4),
+            round(comparison["Predicted_Impact_Amount"].sum(), 2),
+            datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        ]
+    }).to_excel(writer, sheet_name="Exec_Summary", index=False)
+
+print("✅ PaceSmart output file updated successfully")
+print(f"📂 File written to: {OUTPUT_FILE}")
