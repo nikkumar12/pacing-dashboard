@@ -27,11 +27,10 @@ def load_data():
 comparison, features, summary = load_data()
 
 # -------------------------------------------------
-# SAFE DERIVED FIELDS (NO ASSUMPTIONS)
+# SAFE DERIVED FIELDS
 # -------------------------------------------------
 today_utc = datetime.now(timezone.utc).date()
 
-# Campaign Status (derived, not stored)
 if "Campaign_Status" not in comparison.columns:
     comparison["Campaign_Status"] = np.where(
         pd.to_datetime(comparison["Flight_End_Date"]).dt.date >= today_utc,
@@ -39,47 +38,33 @@ if "Campaign_Status" not in comparison.columns:
         "ENDED"
     )
 
-# Remaining Budget
 comparison["Remaining_Budget"] = (
     comparison["Total_Budget"] - comparison["Spend_to_Date"]
 )
 
-# Pace Ratio (Excel logic)
-comparison["Pace_Ratio"] = np.where(
-    comparison["Expected_Spend_Till_Date"] > 0,
-    comparison["Spend_to_Date"] / comparison["Expected_Spend_Till_Date"],
-    0
-)
-
-# ML Confidence (derived safely)
-if "ML_Confidence_%" not in comparison.columns:
-    comparison["ML_Confidence_%"] = np.where(
-        comparison["ML_Prediction"] == "Overdelivered",
-        np.clip((comparison["Budget_At_Risk"] / comparison["Total_Budget"]) * 100, 55, 90),
-        np.where(
-            comparison["ML_Prediction"] == "Underdelivered",
-            np.clip((comparison["Remaining_Budget"] / comparison["Total_Budget"]) * 100, 55, 90),
-            60
-        )
-    ).round(1)
+# Safe fill if missing predictions
+comparison["Predicted_Final_Deviation_%"] = comparison["Predicted_Final_Deviation_%"].fillna(0)
+comparison["Risk_Score"] = comparison["Risk_Score"].fillna(0)
+comparison["Predicted_Impact_Amount"] = comparison["Predicted_Impact_Amount"].fillna(0)
+comparison["Risk_Level"] = comparison["Risk_Level"].fillna("LOW – Stable")
 
 # -------------------------------------------------
-# EXPLANATION LOGIC (WHY ML FLAGGED)
+# EXPLANATION LOGIC
 # -------------------------------------------------
 def explain_ml(row):
     reasons = []
 
-    if row["Pace_Ratio"] > 1.1:
-        reasons.append("Spend accelerating faster than ideal pace")
+    if row["Predicted_Final_Deviation_%"] > 5:
+        reasons.append("Model predicts overspend risk")
 
-    if row["Remaining_Budget"] > 0.4 * row["Total_Budget"]:
-        reasons.append("Large budget still exposed late in flight")
+    if row["Predicted_Final_Deviation_%"] < -5:
+        reasons.append("Model predicts underdelivery risk")
 
-    if row["ML_Confidence_%"] >= 75:
-        reasons.append("Strong historical pattern match")
+    if row["Risk_Score"] >= 75:
+        reasons.append("High severity deviation expected")
 
-    if row["Campaign_Status"] == "LIVE" and row["ML_Prediction"] != "On Track":
-        reasons.append("Predicted deviation before Excel breach")
+    if row["Campaign_Status"] == "LIVE" and row["Risk_Level"] != "LOW – Stable":
+        reasons.append("Early warning before Excel breach")
 
     return "; ".join(reasons) if reasons else "No abnormal pattern detected"
 
@@ -95,7 +80,11 @@ ended_campaigns = (comparison["Campaign_Status"] == "ENDED").sum()
 total_budget = comparison["Total_Budget"].sum()
 total_spend = comparison["Spend_to_Date"].sum()
 total_remaining = comparison["Remaining_Budget"].sum()
-total_risk = comparison["Budget_At_Risk"].sum()
+total_risk = comparison["Predicted_Impact_Amount"].sum()
+
+ml_mae = summary.loc[
+    summary["Metric"] == "ML Validation MAE", "Value"
+].values[0]
 
 last_refresh = summary.loc[
     summary["Metric"] == "LAST_REFRESH_UTC", "Value"
@@ -125,18 +114,18 @@ if page == "Executive Summary":
     c1.metric("Total Campaigns", total_campaigns)
     c2.metric("Live Campaigns", live_campaigns)
     c3.metric("Ended Campaigns", ended_campaigns)
-    c4.metric("ML Accuracy", f"{summary.loc[summary['Metric']=='ML Validation Accuracy','Value'].values[0]:.2%}")
+    c4.metric("ML Validation MAE", round(float(ml_mae), 4))
 
     c5, c6, c7, c8 = st.columns(4)
     c5.metric("Total Budget", f"${total_budget:,.0f}")
     c6.metric("Spend to Date", f"${total_spend:,.0f}")
     c7.metric("Remaining Budget", f"${total_remaining:,.0f}")
-    c8.metric("Budget at Risk (ML)", f"${total_risk:,.0f}")
+    c8.metric("Predicted Impact (ML)", f"${total_risk:,.0f}")
 
     st.info(f"🕒 Last refreshed (UTC): {last_refresh}")
 
 # =================================================
-# PAGE 2: EXCEL ONLY (NO ML)
+# PAGE 2: EXCEL ONLY
 # =================================================
 elif page == "Excel Pacing (No ML)":
     st.title("📘 Excel Pacing (Rule-Based)")
@@ -161,7 +150,7 @@ elif page == "Excel Pacing (No ML)":
 # PAGE 3: EXCEL vs ML
 # =================================================
 elif page == "Excel vs ML Decision View":
-    st.title("⚖️ Excel vs ML – Decision View")
+    st.title("⚖️ Excel vs ML – Predictive Risk View")
 
     st.dataframe(
         comparison[[
@@ -169,11 +158,12 @@ elif page == "Excel vs ML Decision View":
             "DSP",
             "Campaign_Status",
             "Pacing_Status",
-            "ML_Prediction",
-            "ML_Confidence_%",
-            "Budget_At_Risk",
+            "Predicted_Final_Deviation_%",
+            "Risk_Score",
+            "Risk_Level",
+            "Predicted_Impact_Amount",
             "Why_ML_Flagged"
-        ]].sort_values("Budget_At_Risk", ascending=False),
+        ]].sort_values("Risk_Score", ascending=False),
         use_container_width=True
     )
 
@@ -199,16 +189,20 @@ elif page == "How ML Works":
 - Flags only after deviation
 - Cannot learn from history
 
-### ML
-- Learns from **ended campaigns**
-- Detects velocity & pattern risk
-- Flags **before** Excel breaches
-- Assigns confidence using historical similarity
+### ML (Regression Risk Engine)
+- Learns from ended campaigns
+- Predicts final deviation %
+- Assigns risk score (0–100)
+- Quantifies financial impact
+- Flags early before Excel breach
 
-### Confidence Score
-- Based on `predict_proba`
-- Higher % = stronger pattern match
+### Risk Score
+- Based on predicted deviation severity
 - Helps prioritize action
+
+### Impact
+- Converts % deviation into $ value
+- Executive decision ready
 """)
 
 # -------------------------------------------------
