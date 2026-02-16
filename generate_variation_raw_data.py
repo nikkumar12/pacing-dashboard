@@ -1,193 +1,260 @@
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
-import random
+from datetime import datetime, timedelta, timezone
+from sklearn.preprocessing import LabelEncoder
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.metrics import mean_absolute_error
 
 # ==================================================
-# CONFIG
+# PATHS
 # ==================================================
 BASE_PATH = r"C:\Users\nikkumar12\PyCharmMiscProject"
 
-OUTPUT_FILE = f"{BASE_PATH}\\Realistic_Today_Context_Pacing_Data_variation.xlsx"
-
-RANDOM_SEED = np.random.randint(1, 1_000_000)
-np.random.seed(RANDOM_SEED)
-random.seed(RANDOM_SEED)
-
-print(f"\n🔁 Generating LARGE Realistic Dataset | Seed: {RANDOM_SEED}")
+RAW_FILE = f"{BASE_PATH}\\Realistic_Today_Context_Pacing_Data.xlsx"
+EXCEL_FILE = f"{BASE_PATH}\\Excel_Pacing_Output.xlsx"
+OUTPUT_FILE = f"{BASE_PATH}\\PaceSmart_ML_vs_Excel_Output.xlsx"
 
 # ==================================================
-# GLOBAL SETTINGS
+# LOAD DATA (SAFE SCHEMA VERSION)
 # ==================================================
-TOTAL_CAMPAIGNS = 400
-TODAY = datetime.now().date()
-YESTERDAY = TODAY - timedelta(days=1)
+daily = pd.read_excel(RAW_FILE, sheet_name="Daily_Raw_Data")
+meta = pd.read_excel(RAW_FILE, sheet_name="Campaign_Metadata")
+excel_pacing = pd.read_excel(EXCEL_FILE, sheet_name="Pacing")
 
-# DSP pool
-DSP_LIST = ["DV360", "TTD", "META", "AMAZON", "XANDR"]
+# ---- FORCE SAFE STRUCTURE ----
+daily = daily[["Campaign_ID", "Date", "Spend"]]
 
-meta_rows = []
-daily_rows = []
-
-# ==================================================
-# GENERATE CAMPAIGNS
-# ==================================================
-for i in range(TOTAL_CAMPAIGNS):
-
-    campaign_id = f"CAMP_{i+1}"
-    dsp = random.choice(DSP_LIST)
-
-    # Budget tiers
-    budget = random.choice([
-        random.randint(50000, 150000),
-        random.randint(200000, 400000),
-        random.randint(500000, 1200000)
-    ])
-
-    flight_days = random.randint(20, 60)
-
-    # 60% ended
-    if random.random() < 0.6:
-        end_date = TODAY - timedelta(days=random.randint(5, 30))
-        start_date = end_date - timedelta(days=flight_days)
-        status = "ENDED"
-    else:
-        start_date = TODAY - timedelta(days=random.randint(5, 25))
-        end_date = TODAY + timedelta(days=random.randint(5, 40))
-        status = "LIVE"
-
-    meta_rows.append([
-        campaign_id,
-        dsp,
-        budget,
-        start_date,
-        end_date,
-        status
-    ])
-
-    # ==================================================
-    # SPEND BEHAVIOR
-    # ==================================================
-    daily_target = budget / flight_days
-    prev_spend = daily_target
-
-    spend_end = min(end_date, YESTERDAY)
-    if start_date > spend_end:
-        continue
-
-    date_range = pd.date_range(start=start_date, end=spend_end)
-
-    curve_type = random.choice([
-        "linear",
-        "late_acceleration",
-        "early_burst",
-        "sigmoid",
-        "fade_out",
-        "recover_mid",
-        "volatile",
-        "flat_then_push"
-    ])
-
-    dsp_bias = {
-        "META": 1.15,
-        "DV360": 1.0,
-        "TTD": 0.95,
-        "AMAZON": 1.05,
-        "XANDR": 0.9
-    }[dsp]
-
-    for i_day, d in enumerate(date_range):
-
-        progress = i_day / flight_days
-
-        # -------- CORE CURVES --------
-        if curve_type == "linear":
-            multiplier = 1.0
-
-        elif curve_type == "late_acceleration":
-            multiplier = 0.5 + (progress ** 2.5) * 2.2
-
-        elif curve_type == "early_burst":
-            multiplier = 1.8 - (progress ** 2.2) * 1.5
-
-        elif curve_type == "sigmoid":
-            multiplier = 1 / (1 + np.exp(-12*(progress - 0.6))) + 0.5
-
-        elif curve_type == "fade_out":
-            multiplier = 1.6 - progress * 1.2
-
-        elif curve_type == "recover_mid":
-            multiplier = 0.7 + np.sin(progress * 3.14) * 0.8
-
-        elif curve_type == "volatile":
-            multiplier = np.random.uniform(0.6, 1.6)
-
-        elif curve_type == "flat_then_push":
-            multiplier = 0.8 if progress < 0.75 else 2.0
-
-        # Weekend dip
-        if d.weekday() >= 5:
-            multiplier *= np.random.uniform(0.85, 0.95)
-
-        # Month-end push
-        if d.day >= 25:
-            multiplier *= 1.1
-
-        # Random shock day
-        if random.random() < 0.05:
-            multiplier *= random.uniform(0.5, 1.8)
-
-        # DSP bias
-        multiplier *= dsp_bias
-
-        # Volatility cluster
-        volatility = np.random.normal(1.0, 0.12)
-
-        raw_spend = daily_target * multiplier * volatility
-
-        # Autocorrelation smoothing
-        spend = (0.65 * prev_spend) + (0.35 * raw_spend)
-        spend = round(max(spend, 0), 2)
-
-        prev_spend = spend
-
-        daily_rows.append([
-            campaign_id,
-            d,
-            spend
-        ])
-
-# ==================================================
-# FINAL DATAFRAMES
-# ==================================================
-meta_df = pd.DataFrame(meta_rows, columns=[
+meta = meta[[
     "Campaign_ID",
     "DSP",
     "Total_Budget",
     "Flight_Start_Date",
-    "Flight_End_Date",
-    "Campaign_Status"
+    "Flight_End_Date"
+]]
+
+meta["Total_Budget"] = pd.to_numeric(meta["Total_Budget"], errors="coerce")
+
+daily["Date"] = pd.to_datetime(daily["Date"]).dt.normalize()
+meta["Flight_Start_Date"] = pd.to_datetime(meta["Flight_Start_Date"]).dt.normalize()
+meta["Flight_End_Date"] = pd.to_datetime(meta["Flight_End_Date"]).dt.normalize()
+
+# ==================================================
+# DATE LOGIC
+# ==================================================
+YESTERDAY = (
+    datetime.now(timezone.utc)
+    .replace(hour=0, minute=0, second=0, microsecond=0)
+    - timedelta(days=1)
+).replace(tzinfo=None)
+
+daily = daily[daily["Date"] <= YESTERDAY]
+
+# ==================================================
+# STEP 1: BUILD TRAINING DATA (ENDED CAMPAIGNS)
+# ==================================================
+rows = []
+ended = meta[meta["Flight_End_Date"] < YESTERDAY]
+
+for _, c in ended.iterrows():
+
+    cid = c["Campaign_ID"]
+    dsp = c["DSP"]
+    budget = float(c["Total_Budget"])
+    start = c["Flight_Start_Date"]
+    end = c["Flight_End_Date"]
+
+    d = daily[daily["Campaign_ID"] == cid]
+    if d.empty:
+        continue
+
+    total_spend = d["Spend"].sum()
+    flight_days = (end - start).days + 1
+
+    mid_point = start + timedelta(days=int(flight_days * 0.5))
+    d_mid = d[d["Date"] <= mid_point]
+
+    spend_mid = d_mid["Spend"].sum()
+    days_elapsed = (mid_point - start).days + 1
+    days_remaining = flight_days - days_elapsed
+
+    velocity_7d = d_mid.sort_values("Date").tail(7)["Spend"].mean()
+    velocity_3d = d_mid.sort_values("Date").tail(3)["Spend"].mean()
+
+    # Behavioral features
+    time_pct = days_elapsed / flight_days
+    budget_pct = spend_mid / budget if budget > 0 else 0
+    gap_pct = budget_pct - time_pct
+    acceleration = velocity_3d - velocity_7d
+
+    final_deviation = (total_spend - budget) / budget
+
+    rows.append([
+        cid, dsp, budget, flight_days,
+        days_elapsed, days_remaining,
+        spend_mid,
+        velocity_7d, acceleration,
+        time_pct, budget_pct, gap_pct,
+        final_deviation
+    ])
+
+ml_df = pd.DataFrame(rows, columns=[
+    "Campaign_ID","DSP","Total_Budget","Flight_Days",
+    "Days_Elapsed","Days_Remaining",
+    "Spend_to_Date",
+    "Spend_Velocity","Acceleration",
+    "Time_Pct","Budget_Pct","Gap_Pct",
+    "Final_Deviation"
 ])
 
-daily_df = pd.DataFrame(daily_rows, columns=[
-    "Campaign_ID",
-    "Date",
-    "Spend"
-]).sort_values(["Campaign_ID", "Date"])
+# ==================================================
+# STEP 2: TRAIN MODEL
+# ==================================================
+le_dsp = LabelEncoder()
+ml_df["DSP_enc"] = le_dsp.fit_transform(ml_df["DSP"])
+
+features = [
+    "DSP_enc","Total_Budget","Flight_Days",
+    "Days_Elapsed","Days_Remaining",
+    "Spend_to_Date","Spend_Velocity",
+    "Acceleration","Time_Pct",
+    "Budget_Pct","Gap_Pct"
+]
+
+X = ml_df[features]
+y = ml_df["Final_Deviation"]
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.25, random_state=42
+)
+
+model = RandomForestRegressor(
+    n_estimators=500,
+    max_depth=8,
+    random_state=42
+)
+
+model.fit(X_train, y_train)
+
+y_pred = model.predict(X_test)
+ml_mae = mean_absolute_error(y_test, y_pred)
 
 # ==================================================
-# SAVE OUTPUT
+# STEP 3: APPLY TO LIVE CAMPAIGNS
+# ==================================================
+live = meta[meta["Flight_End_Date"] >= YESTERDAY]
+pred_rows = []
+
+for _, c in live.iterrows():
+
+    cid = c["Campaign_ID"]
+    dsp = c["DSP"]
+    budget = float(c["Total_Budget"])
+    start = c["Flight_Start_Date"]
+    end = c["Flight_End_Date"]
+
+    d = daily[daily["Campaign_ID"] == cid]
+    if d.empty:
+        continue
+
+    spend = d["Spend"].sum()
+    days_elapsed = (YESTERDAY - start).days + 1
+    flight_days = (end - start).days + 1
+    days_remaining = flight_days - days_elapsed
+
+    velocity_7d = d.sort_values("Date").tail(7)["Spend"].mean()
+    velocity_3d = d.sort_values("Date").tail(3)["Spend"].mean()
+
+    time_pct = days_elapsed / flight_days
+    budget_pct = spend / budget if budget > 0 else 0
+    gap_pct = budget_pct - time_pct
+    acceleration = velocity_3d - velocity_7d
+
+    X_live = pd.DataFrame([[
+        le_dsp.transform([dsp])[0],
+        budget, flight_days,
+        days_elapsed, days_remaining,
+        spend,
+        velocity_7d, acceleration,
+        time_pct, budget_pct, gap_pct
+    ]], columns=features)
+
+    predicted_deviation = model.predict(X_live)[0]
+    predicted_pct = round(predicted_deviation * 100, 2)
+
+    pred_rows.append([cid, predicted_pct])
+
+ml_preds = pd.DataFrame(
+    pred_rows,
+    columns=["Campaign_ID","Predicted_Final_Deviation_%"]
+)
+
+# ==================================================
+# STEP 4: MERGE WITH EXCEL OUTPUT
+# ==================================================
+comparison = (
+    excel_pacing
+    .merge(meta, on="Campaign_ID", how="left", suffixes=("", "_meta"))
+    .merge(ml_preds, on="Campaign_ID", how="left")
+)
+
+# ==================================================
+# STEP 5: RISK ENGINE
+# ==================================================
+comparison["Risk_Score"] = (
+    comparison["Predicted_Final_Deviation_%"].abs() / 20
+) * 100
+
+comparison["Risk_Score"] = comparison["Risk_Score"].clip(0, 100)
+
+comparison["Predicted_Impact_Amount"] = (
+    comparison["Predicted_Final_Deviation_%"] / 100
+) * comparison["Total_Budget"]
+
+conditions = [
+    comparison["Risk_Score"] >= 70,
+    comparison["Risk_Score"].between(40, 69),
+    comparison["Risk_Score"] < 40
+]
+
+choices = [
+    "CRITICAL – Immediate Action",
+    "MODERATE – Monitor Closely",
+    "LOW – Stable"
+]
+
+comparison["Risk_Level"] = np.select(
+    conditions,
+    choices,
+    default="LOW – Stable"
+)
+
+# ==================================================
+# FEATURE IMPORTANCE
+# ==================================================
+feature_importance = pd.DataFrame({
+    "Feature": features,
+    "Importance": model.feature_importances_
+}).sort_values("Importance", ascending=False)
+
+# ==================================================
+# WRITE OUTPUT
 # ==================================================
 with pd.ExcelWriter(OUTPUT_FILE, engine="openpyxl") as writer:
-    daily_df.to_excel(writer, sheet_name="Daily_Raw_Data", index=False)
-    meta_df.to_excel(writer, sheet_name="Campaign_Metadata", index=False)
+    comparison.to_excel(writer, sheet_name="Excel_vs_ML", index=False)
+    feature_importance.to_excel(writer, sheet_name="Feature_Importance", index=False)
+    pd.DataFrame({
+        "Metric": [
+            "ML Validation MAE",
+            "Total Predicted Impact",
+            "LAST_REFRESH_UTC"
+        ],
+        "Value": [
+            round(ml_mae, 4),
+            round(comparison["Predicted_Impact_Amount"].sum(), 2),
+            datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        ]
+    }).to_excel(writer, sheet_name="Exec_Summary", index=False)
 
-print("\n✅ LARGE realistic dataset generated successfully")
-print(f"📊 Total Campaigns: {TOTAL_CAMPAIGNS}")
-print("✔ Non-linear curves")
-print("✔ DSP behavior bias")
-print("✔ Volatility clusters")
-print("✔ Shock days")
-print("✔ Month-end push")
-print("✔ Mixed live + ended")
-print(f"📂 Output: {OUTPUT_FILE}")
+print("✅ PaceSmart ML pipeline executed successfully")
+print(f"📂 Output written to: {OUTPUT_FILE}")
