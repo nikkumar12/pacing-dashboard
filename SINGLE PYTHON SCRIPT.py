@@ -38,7 +38,7 @@ YESTERDAY = (
 daily = daily[daily["Date"] <= YESTERDAY]
 
 # ==================================================
-# STEP 1: BUILD ML TRAINING DATA (ENDED CAMPAIGNS)
+# STEP 1: BUILD TRAINING DATA (ENDED CAMPAIGNS)
 # ==================================================
 rows = []
 ended = meta[meta["Flight_End_Date"] < YESTERDAY]
@@ -113,7 +113,7 @@ y_pred = model.predict(X_test)
 ml_mae = mean_absolute_error(y_test, y_pred)
 
 # ==================================================
-# STEP 3: APPLY ML TO LIVE CAMPAIGNS
+# STEP 3: APPLY TO LIVE CAMPAIGNS
 # ==================================================
 live = meta[meta["Flight_End_Date"] >= YESTERDAY]
 pred_rows = []
@@ -155,7 +155,7 @@ ml_preds = pd.DataFrame(
 )
 
 # ==================================================
-# STEP 4: MERGE WITH EXCEL OUTPUT
+# STEP 4: SAFE MERGE (FIXES Total_Budget ERROR)
 # ==================================================
 comparison = (
     excel_pacing
@@ -168,28 +168,29 @@ comparison = (
             "DSP"
         ]],
         on="Campaign_ID",
-        how="left"
+        how="left",
+        suffixes=("", "_meta")
     )
     .merge(ml_preds, on="Campaign_ID", how="left")
 )
 
+# Ensure correct Total_Budget column
+if "Total_Budget_meta" in comparison.columns:
+    comparison["Total_Budget"] = comparison["Total_Budget_meta"]
+
 # ==================================================
 # STEP 5: RISK ENGINE
 # ==================================================
-
-# Risk Score (0–100)
 comparison["Risk_Score"] = (
     comparison["Predicted_Final_Deviation_%"].abs() / 20
 ) * 100
 
 comparison["Risk_Score"] = comparison["Risk_Score"].clip(0, 100)
 
-# Predicted Financial Impact
 comparison["Predicted_Impact_Amount"] = (
     comparison["Predicted_Final_Deviation_%"] / 100
 ) * comparison["Total_Budget"]
 
-# Risk Level Buckets
 conditions = [
     comparison["Risk_Score"] >= 70,
     comparison["Risk_Score"].between(40, 69),
@@ -204,7 +205,6 @@ choices = [
 
 comparison["Risk_Level"] = np.select(conditions, choices)
 
-# Early Warning
 comparison["Early_Warning"] = np.where(
     (comparison["Risk_Score"] >= 50) &
     (comparison["Pacing_Status"] == "On Track"),
