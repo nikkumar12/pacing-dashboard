@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 # PAGE CONFIG
 # -------------------------------------------------
 st.set_page_config(
-    page_title="PaceSmart | Excel vs ML Pacing",
+    page_title="PaceSmart | Predictive Pacing Intelligence",
     layout="wide"
 )
 
@@ -42,14 +42,20 @@ comparison["Remaining_Budget"] = (
     comparison["Total_Budget"] - comparison["Spend_to_Date"]
 )
 
-# Safe fill if missing predictions
-comparison["Predicted_Final_Deviation_%"] = comparison["Predicted_Final_Deviation_%"].fillna(0)
-comparison["Risk_Score"] = comparison["Risk_Score"].fillna(0)
-comparison["Predicted_Impact_Amount"] = comparison["Predicted_Impact_Amount"].fillna(0)
-comparison["Risk_Level"] = comparison["Risk_Level"].fillna("LOW – Stable")
+# Safe fills (prevents crashes)
+for col in [
+    "Predicted_Final_Deviation_%",
+    "Risk_Score",
+    "Predicted_Impact_Amount"
+]:
+    if col in comparison.columns:
+        comparison[col] = comparison[col].fillna(0)
+
+if "Risk_Level" in comparison.columns:
+    comparison["Risk_Level"] = comparison["Risk_Level"].fillna("LOW – Stable")
 
 # -------------------------------------------------
-# EXPLANATION LOGIC
+# ML EXPLANATION LOGIC (UPDATED)
 # -------------------------------------------------
 def explain_ml(row):
     reasons = []
@@ -80,7 +86,7 @@ ended_campaigns = (comparison["Campaign_Status"] == "ENDED").sum()
 total_budget = comparison["Total_Budget"].sum()
 total_spend = comparison["Spend_to_Date"].sum()
 total_remaining = comparison["Remaining_Budget"].sum()
-total_risk = comparison["Predicted_Impact_Amount"].sum()
+total_predicted_impact = comparison["Predicted_Impact_Amount"].sum()
 
 ml_mae = summary.loc[
     summary["Metric"] == "ML Validation MAE", "Value"
@@ -91,14 +97,14 @@ last_refresh = summary.loc[
 ].values[0]
 
 # -------------------------------------------------
-# SIDEBAR
+# SIDEBAR NAVIGATION
 # -------------------------------------------------
 page = st.sidebar.radio(
     "Navigate",
     [
         "Executive Summary",
-        "Excel Pacing (No ML)",
-        "Excel vs ML Decision View",
+        "Excel Pacing (Rule-Based)",
+        "Predictive Risk View (ML)",
         "ML Feature Importance",
         "How ML Works"
     ]
@@ -108,7 +114,7 @@ page = st.sidebar.radio(
 # PAGE 1: EXECUTIVE SUMMARY
 # =================================================
 if page == "Executive Summary":
-    st.title("📊 PaceSmart – Executive Summary")
+    st.title("📊 PaceSmart – Executive Dashboard")
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Total Campaigns", total_campaigns)
@@ -120,15 +126,15 @@ if page == "Executive Summary":
     c5.metric("Total Budget", f"${total_budget:,.0f}")
     c6.metric("Spend to Date", f"${total_spend:,.0f}")
     c7.metric("Remaining Budget", f"${total_remaining:,.0f}")
-    c8.metric("Predicted Impact (ML)", f"${total_risk:,.0f}")
+    c8.metric("Predicted Financial Impact", f"${total_predicted_impact:,.0f}")
 
     st.info(f"🕒 Last refreshed (UTC): {last_refresh}")
 
 # =================================================
 # PAGE 2: EXCEL ONLY
 # =================================================
-elif page == "Excel Pacing (No ML)":
-    st.title("📘 Excel Pacing (Rule-Based)")
+elif page == "Excel Pacing (Rule-Based)":
+    st.title("📘 Excel Pacing – Current Status")
 
     st.dataframe(
         comparison[[
@@ -147,10 +153,10 @@ elif page == "Excel Pacing (No ML)":
     )
 
 # =================================================
-# PAGE 3: EXCEL vs ML
+# PAGE 3: ML PREDICTIVE VIEW
 # =================================================
-elif page == "Excel vs ML Decision View":
-    st.title("⚖️ Excel vs ML – Predictive Risk View")
+elif page == "Predictive Risk View (ML)":
+    st.title("🔮 Predictive Risk Intelligence")
 
     st.dataframe(
         comparison[[
@@ -187,26 +193,26 @@ elif page == "How ML Works":
 ### Excel
 - Assumes linear spend
 - Flags only after deviation
-- Cannot learn from history
+- Does not learn from historical patterns
 
-### ML (Regression Risk Engine)
+### ML (Behavioral Regression Model)
 - Learns from ended campaigns
+- Uses time %, budget %, acceleration & gap logic
 - Predicts final deviation %
-- Assigns risk score (0–100)
+- Converts deviation into risk score
 - Quantifies financial impact
 - Flags early before Excel breach
 
 ### Risk Score
-- Based on predicted deviation severity
-- Helps prioritize action
+- 0–100 severity scale
+- Helps prioritize campaigns
 
-### Impact
-- Converts % deviation into $ value
-- Executive decision ready
+### Financial Impact
+- Converts predicted deviation into monetary exposure
 """)
 
 # -------------------------------------------------
 # FOOTER
 # -------------------------------------------------
 st.markdown("---")
-st.caption("PaceSmart augments Excel with predictive intelligence. Decisions remain human-led.")
+st.caption("PaceSmart augments Excel with predictive intelligence. Final decisions remain human-led.")

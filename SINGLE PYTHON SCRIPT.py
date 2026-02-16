@@ -62,36 +62,49 @@ for _, c in ended.iterrows():
 
     spend_mid = d_mid["Spend"].sum()
     days_elapsed = (mid_point - start).days + 1
-    expected_mid = budget * (days_elapsed / flight_days)
+    days_remaining = flight_days - days_elapsed
 
-    pace_ratio = spend_mid / expected_mid if expected_mid > 0 else 0
     velocity_7d = d_mid.sort_values("Date").tail(7)["Spend"].mean()
+    velocity_3d = d_mid.sort_values("Date").tail(3)["Spend"].mean()
 
-    # 🎯 REGRESSION TARGET
+    # NEW INTELLIGENT FEATURES
+    time_pct = days_elapsed / flight_days
+    budget_pct = spend_mid / budget if budget > 0 else 0
+    gap_pct = budget_pct - time_pct
+    acceleration = velocity_3d - velocity_7d
+
     final_deviation = (total_spend - budget) / budget
 
     rows.append([
         cid, dsp, budget, flight_days,
-        days_elapsed, spend_mid,
-        pace_ratio, velocity_7d, final_deviation
+        days_elapsed, days_remaining,
+        spend_mid,
+        velocity_7d, acceleration,
+        time_pct, budget_pct, gap_pct,
+        final_deviation
     ])
 
 ml_df = pd.DataFrame(rows, columns=[
     "Campaign_ID","DSP","Total_Budget","Flight_Days",
-    "Days_Elapsed","Spend_to_Date",
-    "Pace_Ratio","Spend_Velocity","Final_Deviation"
+    "Days_Elapsed","Days_Remaining",
+    "Spend_to_Date",
+    "Spend_Velocity","Acceleration",
+    "Time_Pct","Budget_Pct","Gap_Pct",
+    "Final_Deviation"
 ])
 
 # ==================================================
-# STEP 2: TRAIN REGRESSION MODEL
+# STEP 2: TRAIN MODEL
 # ==================================================
 le_dsp = LabelEncoder()
 ml_df["DSP_enc"] = le_dsp.fit_transform(ml_df["DSP"])
 
 features = [
     "DSP_enc","Total_Budget","Flight_Days",
-    "Days_Elapsed","Spend_to_Date",
-    "Pace_Ratio","Spend_Velocity"
+    "Days_Elapsed","Days_Remaining",
+    "Spend_to_Date","Spend_Velocity",
+    "Acceleration","Time_Pct",
+    "Budget_Pct","Gap_Pct"
 ]
 
 X = ml_df[features]
@@ -102,8 +115,8 @@ X_train, X_test, y_train, y_test = train_test_split(
 )
 
 model = RandomForestRegressor(
-    n_estimators=400,
-    max_depth=7,
+    n_estimators=500,
+    max_depth=8,
     random_state=42
 )
 
@@ -132,16 +145,23 @@ for _, c in live.iterrows():
     spend = d["Spend"].sum()
     days_elapsed = (YESTERDAY - start).days + 1
     flight_days = (end - start).days + 1
-    expected = budget * (days_elapsed / flight_days)
+    days_remaining = flight_days - days_elapsed
 
-    pace_ratio = spend / expected if expected > 0 else 0
     velocity_7d = d.sort_values("Date").tail(7)["Spend"].mean()
+    velocity_3d = d.sort_values("Date").tail(3)["Spend"].mean()
+
+    time_pct = days_elapsed / flight_days
+    budget_pct = spend / budget if budget > 0 else 0
+    gap_pct = budget_pct - time_pct
+    acceleration = velocity_3d - velocity_7d
 
     X_live = pd.DataFrame([[
         le_dsp.transform([dsp])[0],
         budget, flight_days,
-        days_elapsed, spend,
-        pace_ratio, velocity_7d
+        days_elapsed, days_remaining,
+        spend,
+        velocity_7d, acceleration,
+        time_pct, budget_pct, gap_pct
     ]], columns=features)
 
     predicted_deviation = model.predict(X_live)[0]
@@ -153,94 +173,3 @@ ml_preds = pd.DataFrame(
     pred_rows,
     columns=["Campaign_ID","Predicted_Final_Deviation_%"]
 )
-
-# ==================================================
-# STEP 4: SAFE MERGE
-# ==================================================
-comparison = (
-    excel_pacing
-    .merge(
-        meta[[
-            "Campaign_ID",
-            "Flight_Start_Date",
-            "Flight_End_Date",
-            "Total_Budget",
-            "DSP"
-        ]],
-        on="Campaign_ID",
-        how="left",
-        suffixes=("", "_meta")
-    )
-    .merge(ml_preds, on="Campaign_ID", how="left")
-)
-
-if "Total_Budget_meta" in comparison.columns:
-    comparison["Total_Budget"] = comparison["Total_Budget_meta"]
-
-# ==================================================
-# STEP 5: RISK ENGINE (FULLY FIXED)
-# ==================================================
-comparison["Risk_Score"] = (
-    comparison["Predicted_Final_Deviation_%"].abs() / 20
-) * 100
-
-comparison["Risk_Score"] = comparison["Risk_Score"].clip(0, 100)
-
-comparison["Predicted_Impact_Amount"] = (
-    comparison["Predicted_Final_Deviation_%"] / 100
-) * comparison["Total_Budget"]
-
-conditions = [
-    comparison["Risk_Score"] >= 70,
-    comparison["Risk_Score"].between(40, 69),
-    comparison["Risk_Score"] < 40
-]
-
-choices = [
-    "CRITICAL – Immediate Action",
-    "MODERATE – Monitor Closely",
-    "LOW – Stable"
-]
-
-comparison["Risk_Level"] = np.select(
-    conditions,
-    choices,
-    default="LOW – Stable"
-)
-
-comparison["Early_Warning"] = np.where(
-    (comparison["Risk_Score"] >= 50) &
-    (comparison["Pacing_Status"] == "On Track"),
-    "YES",
-    "NO"
-)
-
-# ==================================================
-# FEATURE IMPORTANCE
-# ==================================================
-feature_importance = pd.DataFrame({
-    "Feature": features,
-    "Importance": model.feature_importances_
-}).sort_values("Importance", ascending=False)
-
-# ==================================================
-# WRITE OUTPUT
-# ==================================================
-with pd.ExcelWriter(OUTPUT_FILE, engine="openpyxl") as writer:
-    comparison.to_excel(writer, sheet_name="Excel_vs_ML", index=False)
-    feature_importance.to_excel(writer, sheet_name="Feature_Importance", index=False)
-    pd.DataFrame({
-        "Metric": [
-            "ML Validation MAE",
-            "Total Predicted Impact",
-            "LAST_REFRESH_UTC"
-        ],
-        "Value": [
-            round(ml_mae, 4),
-            round(comparison["Predicted_Impact_Amount"].sum(), 2),
-            datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-        ]
-    }).to_excel(writer, sheet_name="Exec_Summary", index=False)
-
-print("✅ PaceSmart Predictive Risk Engine executed successfully")
-print(f"📂 Output written to: {OUTPUT_FILE}")
