@@ -23,11 +23,11 @@ meta = pd.read_excel(RAW_FILE, sheet_name="Campaign_Metadata")
 excel_pacing = pd.read_excel(EXCEL_FILE, sheet_name="Pacing")
 
 # ==================================================
-# DATE NORMALIZATION (SAFE / TZ CONSISTENT)
+# DATE NORMALIZATION
 # ==================================================
-daily["Date"] = pd.to_datetime(daily["Date"], errors="coerce").dt.normalize()
-meta["Flight_Start_Date"] = pd.to_datetime(meta["Flight_Start_Date"], errors="coerce").dt.normalize()
-meta["Flight_End_Date"] = pd.to_datetime(meta["Flight_End_Date"], errors="coerce").dt.normalize()
+daily["Date"] = pd.to_datetime(daily["Date"]).dt.normalize()
+meta["Flight_Start_Date"] = pd.to_datetime(meta["Flight_Start_Date"]).dt.normalize()
+meta["Flight_End_Date"] = pd.to_datetime(meta["Flight_End_Date"]).dt.normalize()
 
 YESTERDAY = (
     datetime.now(timezone.utc)
@@ -38,14 +38,13 @@ YESTERDAY = (
 daily = daily[daily["Date"] <= YESTERDAY]
 
 # ==================================================
-# STEP 1: BUILD ML TRAINING DATA (ENDED CAMPAIGNS)
+# BUILD ML TRAINING DATA (ENDED CAMPAIGNS)
 # ==================================================
 rows = []
 
 ended = meta[meta["Flight_End_Date"] < YESTERDAY]
 
 for _, c in ended.iterrows():
-
     cid = c["Campaign_ID"]
     dsp = c["DSP"]
     budget = float(c["Total_Budget"])
@@ -91,7 +90,7 @@ ml_df = pd.DataFrame(rows, columns=[
 ])
 
 # ==================================================
-# STEP 2: TRAIN MODEL
+# TRAIN ML MODEL
 # ==================================================
 le_dsp = LabelEncoder()
 le_label = LabelEncoder()
@@ -122,13 +121,16 @@ model.fit(X_train, y_train)
 ml_accuracy = accuracy_score(y_test, model.predict(X_test))
 
 # ==================================================
-# STEP 3: APPLY ML TO LIVE CAMPAIGNS
+# APPLY ML TO LIVE CAMPAIGNS
 # ==================================================
-live = meta[meta["Flight_End_Date"] >= YESTERDAY]
+live = meta[
+    (meta["Flight_Start_Date"] <= YESTERDAY) &
+    (meta["Flight_End_Date"] >= YESTERDAY)
+]
+
 pred_rows = []
 
 for _, c in live.iterrows():
-
     cid = c["Campaign_ID"]
     dsp = c["DSP"]
     budget = float(c["Total_Budget"])
@@ -162,42 +164,34 @@ for _, c in live.iterrows():
 ml_preds = pd.DataFrame(pred_rows, columns=["Campaign_ID","ML_Prediction"])
 
 # ==================================================
-# STEP 4: SAFE MERGE (NO COLUMN BREAK)
+# MERGE EXCEL + META + ML
 # ==================================================
 comparison = (
     excel_pacing
-    .merge(
-        meta[
-            ["Campaign_ID", "Total_Budget", "Flight_Start_Date", "Flight_End_Date"]
-        ],
-        on="Campaign_ID",
-        how="left",
-        suffixes=("", "_meta")
-    )
+    .merge(meta, on="Campaign_ID", how="left")
     .merge(ml_preds, on="Campaign_ID", how="left")
 )
 
-# SAFE Total_Budget detection
-if "Total_Budget" not in comparison.columns:
-    candidates = [c for c in comparison.columns if "Total_Budget" in c]
-    if candidates:
-        comparison["Total_Budget"] = comparison[candidates[0]]
-    else:
-        raise ValueError("Total_Budget missing after merge.")
-
-comparison["Total_Budget"] = comparison["Total_Budget"].astype(float)
-
 # ==================================================
-# STEP 5: CAMPAIGN STATUS
+# FIX: CORRECT CAMPAIGN STATUS LOGIC
 # ==================================================
-comparison["Campaign_Status"] = np.where(
-    comparison["Flight_End_Date"] >= YESTERDAY,
-    "LIVE",
-    "ENDED"
+comparison["Campaign_Status"] = np.select(
+    [
+        comparison["Flight_Start_Date"] > YESTERDAY,
+        (comparison["Flight_Start_Date"] <= YESTERDAY) &
+        (comparison["Flight_End_Date"] >= YESTERDAY),
+        comparison["Flight_End_Date"] < YESTERDAY
+    ],
+    [
+        "FUTURE",
+        "LIVE",
+        "ENDED"
+    ],
+    default="UNKNOWN"
 )
 
 # ==================================================
-# STEP 6: RISK CALCULATIONS
+# RISK CALCULATIONS
 # ==================================================
 comparison["Budget_At_Risk"] = np.where(
     comparison["ML_Prediction"] == "Overdelivered",
@@ -212,15 +206,8 @@ comparison["ML_Early_Warning"] = np.where(
     "NO"
 )
 
-# Excel vs ML disagreement
-comparison["Excel_vs_ML_Disagree"] = np.where(
-    comparison["Pacing_Status"] != comparison["ML_Prediction"],
-    "YES",
-    "NO"
-)
-
 # ==================================================
-# STEP 7: FEATURE IMPORTANCE
+# FEATURE IMPORTANCE
 # ==================================================
 feature_importance = pd.DataFrame({
     "Feature": features,
@@ -228,30 +215,23 @@ feature_importance = pd.DataFrame({
 }).sort_values("Importance", ascending=False)
 
 # ==================================================
-# STEP 8: EXEC SUMMARY
-# ==================================================
-exec_summary = pd.DataFrame({
-    "Metric": [
-        "ML Validation Accuracy",
-        "Total Budget At Risk",
-        "Excel vs ML Disagreement Count",
-        "LAST_REFRESH_UTC"
-    ],
-    "Value": [
-        round(ml_accuracy, 3),
-        round(comparison["Budget_At_Risk"].sum(), 2),
-        (comparison["Excel_vs_ML_Disagree"] == "YES").sum(),
-        datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    ]
-})
-
-# ==================================================
-# STEP 9: WRITE OUTPUT
+# WRITE OUTPUT
 # ==================================================
 with pd.ExcelWriter(OUTPUT_FILE, engine="openpyxl") as writer:
     comparison.to_excel(writer, sheet_name="Excel_vs_ML", index=False)
     feature_importance.to_excel(writer, sheet_name="Feature_Importance", index=False)
-    exec_summary.to_excel(writer, sheet_name="Exec_Summary", index=False)
+    pd.DataFrame({
+        "Metric": [
+            "ML Validation Accuracy",
+            "Total Budget At Risk",
+            "LAST_REFRESH_UTC"
+        ],
+        "Value": [
+            round(ml_accuracy, 3),
+            round(comparison["Budget_At_Risk"].sum(), 2),
+            datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        ]
+    }).to_excel(writer, sheet_name="Exec_Summary", index=False)
 
 print("✅ PaceSmart pipeline executed successfully")
 print(f"📂 Output written to: {OUTPUT_FILE}")
