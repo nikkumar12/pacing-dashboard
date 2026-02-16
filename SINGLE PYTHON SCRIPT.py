@@ -23,7 +23,7 @@ meta = pd.read_excel(RAW_FILE, sheet_name="Campaign_Metadata")
 excel_pacing = pd.read_excel(EXCEL_FILE, sheet_name="Pacing")
 
 # ==================================================
-# DATE NORMALIZATION
+# DATE NORMALIZATION (NO FORMAT CHANGE)
 # ==================================================
 daily["Date"] = pd.to_datetime(daily["Date"]).dt.normalize()
 meta["Flight_Start_Date"] = pd.to_datetime(meta["Flight_Start_Date"]).dt.normalize()
@@ -38,7 +38,7 @@ YESTERDAY = (
 daily = daily[daily["Date"] <= YESTERDAY]
 
 # ==================================================
-# BUILD ML TRAINING DATA (ENDED CAMPAIGNS)
+# STEP 1: BUILD ML TRAINING DATA (ENDED CAMPAIGNS)
 # ==================================================
 rows = []
 
@@ -90,7 +90,7 @@ ml_df = pd.DataFrame(rows, columns=[
 ])
 
 # ==================================================
-# TRAIN ML MODEL
+# STEP 2: TRAIN ML MODEL
 # ==================================================
 le_dsp = LabelEncoder()
 le_label = LabelEncoder()
@@ -116,18 +116,14 @@ model = RandomForestClassifier(
     max_depth=6,
     random_state=42
 )
-
 model.fit(X_train, y_train)
+
 ml_accuracy = accuracy_score(y_test, model.predict(X_test))
 
 # ==================================================
-# APPLY ML TO LIVE CAMPAIGNS
+# STEP 3: APPLY ML TO LIVE CAMPAIGNS
 # ==================================================
-live = meta[
-    (meta["Flight_Start_Date"] <= YESTERDAY) &
-    (meta["Flight_End_Date"] >= YESTERDAY)
-]
-
+live = meta[meta["Flight_End_Date"] >= YESTERDAY]
 pred_rows = []
 
 for _, c in live.iterrows():
@@ -164,34 +160,38 @@ for _, c in live.iterrows():
 ml_preds = pd.DataFrame(pred_rows, columns=["Campaign_ID","ML_Prediction"])
 
 # ==================================================
-# MERGE EXCEL + META + ML
+# STEP 4: SAFE MERGE (FIX FOR Flight_Start_Date ERROR)
 # ==================================================
 comparison = (
     excel_pacing
-    .merge(meta, on="Campaign_ID", how="left")
+    .merge(
+        meta[[
+            "Campaign_ID",
+            "Flight_Start_Date",
+            "Flight_End_Date",
+            "Total_Budget",
+            "DSP"
+        ]],
+        on="Campaign_ID",
+        how="left",
+        suffixes=("", "_meta")
+    )
     .merge(ml_preds, on="Campaign_ID", how="left")
 )
 
-# ==================================================
-# FIX: CORRECT CAMPAIGN STATUS LOGIC
-# ==================================================
-comparison["Campaign_Status"] = np.select(
-    [
-        comparison["Flight_Start_Date"] > YESTERDAY,
-        (comparison["Flight_Start_Date"] <= YESTERDAY) &
-        (comparison["Flight_End_Date"] >= YESTERDAY),
-        comparison["Flight_End_Date"] < YESTERDAY
-    ],
-    [
-        "FUTURE",
-        "LIVE",
-        "ENDED"
-    ],
-    default="UNKNOWN"
-)
+# Force correct column names if suffixed
+if "Flight_Start_Date_meta" in comparison.columns:
+    comparison["Flight_Start_Date"] = comparison["Flight_Start_Date_meta"]
+
+if "Flight_End_Date_meta" in comparison.columns:
+    comparison["Flight_End_Date"] = comparison["Flight_End_Date_meta"]
+
+# Ensure datetime
+comparison["Flight_Start_Date"] = pd.to_datetime(comparison["Flight_Start_Date"]).dt.normalize()
+comparison["Flight_End_Date"] = pd.to_datetime(comparison["Flight_End_Date"]).dt.normalize()
 
 # ==================================================
-# RISK CALCULATIONS
+# STEP 5: RISK CALCULATION
 # ==================================================
 comparison["Budget_At_Risk"] = np.where(
     comparison["ML_Prediction"] == "Overdelivered",
@@ -207,7 +207,7 @@ comparison["ML_Early_Warning"] = np.where(
 )
 
 # ==================================================
-# FEATURE IMPORTANCE
+# STEP 6: FEATURE IMPORTANCE
 # ==================================================
 feature_importance = pd.DataFrame({
     "Feature": features,
@@ -215,7 +215,7 @@ feature_importance = pd.DataFrame({
 }).sort_values("Importance", ascending=False)
 
 # ==================================================
-# WRITE OUTPUT
+# STEP 7: WRITE OUTPUT
 # ==================================================
 with pd.ExcelWriter(OUTPUT_FILE, engine="openpyxl") as writer:
     comparison.to_excel(writer, sheet_name="Excel_vs_ML", index=False)
