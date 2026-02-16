@@ -3,80 +3,141 @@ import numpy as np
 from datetime import datetime, timedelta
 
 # ==================================================
-# CONFIG
+# CONFIG (UNCHANGED)
 # ==================================================
 BASE_PATH = r"C:\Users\nikkumar12\PyCharmMiscProject"
 
 INPUT_FILE = f"{BASE_PATH}\\Realistic_Today_Context_Pacing_Data.xlsx"
 OUTPUT_FILE = f"{BASE_PATH}\\Realistic_Today_Context_Pacing_Data_variation.xlsx"
 
-# New random seed each run
+# New random seed EVERY RUN
 RANDOM_SEED = np.random.randint(1, 1_000_000)
 np.random.seed(RANDOM_SEED)
 
-print(f"\n🔁 Generating clean campaign-consistent variation | Seed: {RANDOM_SEED}")
+print(f"\n🔁 Generating Daily ML Data | Seed: {RANDOM_SEED}")
 
 # ==================================================
-# LOAD ORIGINAL DATA
+# LOAD METADATA
 # ==================================================
-daily = pd.read_excel(INPUT_FILE, sheet_name="Daily_Raw_Data")
 meta = pd.read_excel(INPUT_FILE, sheet_name="Campaign_Metadata")
 
-daily["Date"] = pd.to_datetime(daily["Date"], errors="coerce").dt.normalize()
-meta["Flight_Start_Date"] = pd.to_datetime(meta["Flight_Start_Date"]).dt.normalize()
-meta["Flight_End_Date"] = pd.to_datetime(meta["Flight_End_Date"]).dt.normalize()
+meta["Flight_Start_Date"] = pd.to_datetime(meta["Flight_Start_Date"])
+meta["Flight_End_Date"] = pd.to_datetime(meta["Flight_End_Date"])
 
-TODAY = datetime.utcnow().date()
+TODAY = datetime.now().date()
 YESTERDAY = TODAY - timedelta(days=1)
 
-print(f"🕒 Today (UTC): {TODAY}")
-print(f"📅 Generating data till: {YESTERDAY}")
+print(f"🕒 Today: {TODAY}")
+print(f"📅 Spend generated till: {YESTERDAY}")
 
 # ==================================================
-# PATTERN TYPES
+# REMOVE FUTURE START CAMPAIGNS
 # ==================================================
-pattern_types = ["stable", "front_loaded", "back_loaded", "volatile"]
+meta = meta[meta["Flight_Start_Date"].dt.date <= TODAY].copy()
 
 # ==================================================
-# GENERATE CLEAN DATA
+# DISTRIBUTE ENDED + LIVE CAMPAIGNS
+# ==================================================
+total_campaigns = len(meta)
+
+ended_count = int(total_campaigns * 0.6)
+live_count = total_campaigns - ended_count
+
+meta = meta.sample(frac=1).reset_index(drop=True)
+meta["Campaign_Status"] = None
+
+# ---------- ENDED CAMPAIGNS ----------
+for i in range(ended_count):
+
+    duration = np.random.randint(20, 45)
+
+    end_date = TODAY - timedelta(days=np.random.randint(5, 25))
+    start_date = end_date - timedelta(days=duration)
+
+    meta.loc[i, "Flight_Start_Date"] = pd.Timestamp(start_date)
+    meta.loc[i, "Flight_End_Date"] = pd.Timestamp(end_date)
+    meta.loc[i, "Campaign_Status"] = "ENDED"
+
+# ---------- LIVE CAMPAIGNS ----------
+for i in range(ended_count, total_campaigns):
+
+    start_date = TODAY - timedelta(days=np.random.randint(5, 20))
+    end_date = TODAY + timedelta(days=np.random.randint(5, 30))  # future window
+
+    meta.loc[i, "Flight_Start_Date"] = pd.Timestamp(start_date)
+    meta.loc[i, "Flight_End_Date"] = pd.Timestamp(end_date)
+    meta.loc[i, "Campaign_Status"] = "LIVE"
+
+print(f"📊 Live: {live_count} | Ended: {ended_count}")
+
+# ==================================================
+# GENERATE SPEND DATA (TILL YESTERDAY ONLY)
 # ==================================================
 new_rows = []
+
+ml_patterns = [
+    "underpace",
+    "overpace",
+    "ontrack",
+    "late_push",
+    "early_burst"
+]
 
 for _, row in meta.iterrows():
 
     cid = row["Campaign_ID"]
-    start = row["Flight_Start_Date"].date()
-    end = min(row["Flight_End_Date"].date(), YESTERDAY)
+    start = pd.to_datetime(row["Flight_Start_Date"]).date()
+    end = pd.to_datetime(row["Flight_End_Date"]).date()
 
-    # Skip if campaign hasn't started
-    if start > YESTERDAY:
+    total_budget = row.get("Total_Budget", np.random.uniform(200000, 800000))
+    flight_days = (end - start).days + 1
+    daily_target = total_budget / flight_days
+
+    pattern = np.random.choice(ml_patterns)
+
+    cumulative_spend = 0
+    prev_spend = daily_target
+
+    # Generate spend ONLY till yesterday
+    spend_end_date = min(end, YESTERDAY)
+
+    if start > spend_end_date:
         continue
 
-    # Choose ONE pattern per campaign
-    pattern = np.random.choice(pattern_types)
-
-    date_range = pd.date_range(start=start, end=end, freq="D")
-
-    base_spend = np.random.uniform(800, 2000)
+    date_range = pd.date_range(start=start, end=spend_end_date)
 
     for i, d in enumerate(date_range):
 
-        day_position = i / len(date_range)
+        progress = i / flight_days
 
-        # Pattern logic
-        if pattern == "stable":
-            multiplier = np.random.uniform(0.9, 1.1)
+        # -------- ML PATTERNS --------
+        if pattern == "underpace":
+            multiplier = 0.75
 
-        elif pattern == "front_loaded":
-            multiplier = 1.4 - day_position + np.random.uniform(-0.1, 0.1)
+        elif pattern == "overpace":
+            multiplier = 1.25
 
-        elif pattern == "back_loaded":
-            multiplier = 0.6 + day_position + np.random.uniform(-0.1, 0.1)
+        elif pattern == "ontrack":
+            multiplier = 1.0
 
-        elif pattern == "volatile":
-            multiplier = np.random.uniform(0.6, 1.6)
+        elif pattern == "late_push":
+            multiplier = 0.7 if progress < 0.7 else 1.4
 
-        spend = round(max(base_spend * multiplier, 0), 2)
+        elif pattern == "early_burst":
+            multiplier = 1.4 if progress < 0.3 else 0.8
+
+        # Weekend dip
+        if d.weekday() >= 5:
+            multiplier *= np.random.uniform(0.85, 0.95)
+
+        # Smooth spend (autocorrelation)
+        raw_spend = daily_target * multiplier
+        spend = (0.6 * prev_spend) + (0.4 * raw_spend)
+
+        spend = round(max(spend, 0), 2)
+
+        cumulative_spend += spend
+        prev_spend = spend
 
         new_rows.append({
             "Campaign_ID": cid,
@@ -85,23 +146,18 @@ for _, row in meta.iterrows():
         })
 
 # ==================================================
-# CREATE CLEAN DATAFRAME
+# FINALIZE OUTPUT
 # ==================================================
 daily_clean = pd.DataFrame(new_rows)
-
-# Sort properly
 daily_clean = daily_clean.sort_values(["Campaign_ID", "Date"])
 
-# ==================================================
-# WRITE OUTPUT (SCHEMA UNCHANGED)
-# ==================================================
 with pd.ExcelWriter(OUTPUT_FILE, engine="openpyxl") as writer:
     daily_clean.to_excel(writer, sheet_name="Daily_Raw_Data", index=False)
     meta.to_excel(writer, sheet_name="Campaign_Metadata", index=False)
 
-print("\n✅ Clean structured variation file generated")
-print("✔ Continuous dates")
-print("✔ Campaign-consistent patterns")
-print("✔ DSP preserved from metadata")
-print("✔ No broken schema")
+print("\n✅ Daily ML dataset generated successfully")
+print("✔ No future start campaigns")
+print("✔ Live campaigns end within next 30 days")
+print("✔ Spend generated only till yesterday")
+print("✔ Variations change every run")
 print(f"📂 Output: {OUTPUT_FILE}")
