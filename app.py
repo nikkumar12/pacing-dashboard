@@ -114,22 +114,56 @@ page = st.sidebar.radio(
 # PAGE 1: EXECUTIVE SUMMARY
 # =================================================
 if page == "Executive Summary":
-    st.title("📊 PaceSmart – Executive Dashboard")
+    st.title("📊 PaceSmart – Executive Summary")
 
+    # -------------------------------------------------
+    # STATUS FILTER (NEW)
+    # -------------------------------------------------
+    status_filter = st.radio(
+        "Campaign Status",
+        ["All", "LIVE", "ENDED"],
+        horizontal=True
+    )
+
+    # Apply filter
+    if status_filter == "LIVE":
+        filtered = comparison[comparison["Campaign_Status"] == "LIVE"]
+    elif status_filter == "ENDED":
+        filtered = comparison[comparison["Campaign_Status"] == "ENDED"]
+    else:
+        filtered = comparison.copy()
+
+    # -------------------------------------------------
+    # EXECUTIVE METRICS (UPDATED TO USE FILTERED)
+    # -------------------------------------------------
+    total_campaigns = len(filtered)
+    live_campaigns = (filtered["Campaign_Status"] == "LIVE").sum()
+    ended_campaigns = (filtered["Campaign_Status"] == "ENDED").sum()
+
+    total_budget = filtered["Total_Budget"].sum()
+    total_spend = filtered["Spend_to_Date"].sum()
+    total_remaining = filtered["Remaining_Budget"].sum()
+    total_risk = filtered["Budget_At_Risk"].sum()
+
+    # -------------------------------------------------
+    # DISPLAY METRICS
+    # -------------------------------------------------
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Total Campaigns", total_campaigns)
     c2.metric("Live Campaigns", live_campaigns)
     c3.metric("Ended Campaigns", ended_campaigns)
-    c4.metric("ML Validation MAE", round(float(ml_mae), 4))
+    c4.metric(
+        "ML Accuracy",
+        f"{summary.loc[summary['Metric']=='ML Validation MAE','Value'].values[0]:.4f}"
+    )
 
     c5, c6, c7, c8 = st.columns(4)
     c5.metric("Total Budget", f"${total_budget:,.0f}")
     c6.metric("Spend to Date", f"${total_spend:,.0f}")
     c7.metric("Remaining Budget", f"${total_remaining:,.0f}")
-    c8.metric("Predicted Financial Impact", f"${total_predicted_impact:,.0f}")
+    c8.metric("Predicted Impact", f"${total_risk:,.0f}")
 
     st.info(f"🕒 Last refreshed (UTC): {last_refresh}")
-
 # =================================================
 # PAGE 2: EXCEL ONLY
 # =================================================
