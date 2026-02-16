@@ -22,6 +22,12 @@ def load_data():
     comparison = pd.read_excel(DATA_FILE, sheet_name="Excel_vs_ML")
     features = pd.read_excel(DATA_FILE, sheet_name="Feature_Importance")
     summary = pd.read_excel(DATA_FILE, sheet_name="Exec_Summary")
+
+    # Clean column names (prevents hidden space errors)
+    comparison.columns = comparison.columns.str.strip()
+    features.columns = features.columns.str.strip()
+    summary.columns = summary.columns.str.strip()
+
     return comparison, features, summary
 
 comparison, features, summary = load_data()
@@ -42,20 +48,26 @@ comparison["Remaining_Budget"] = (
     comparison["Total_Budget"] - comparison["Spend_to_Date"]
 )
 
-# Safe fills (prevents crashes)
-for col in [
+# Fill numeric safety
+safe_numeric_cols = [
     "Predicted_Final_Deviation_%",
     "Risk_Score",
     "Predicted_Impact_Amount"
-]:
+]
+
+for col in safe_numeric_cols:
     if col in comparison.columns:
         comparison[col] = comparison[col].fillna(0)
+    else:
+        comparison[col] = 0
 
 if "Risk_Level" in comparison.columns:
     comparison["Risk_Level"] = comparison["Risk_Level"].fillna("LOW – Stable")
+else:
+    comparison["Risk_Level"] = "LOW – Stable"
 
 # -------------------------------------------------
-# ML EXPLANATION LOGIC (UPDATED)
+# ML EXPLANATION LOGIC
 # -------------------------------------------------
 def explain_ml(row):
     reasons = []
@@ -77,24 +89,17 @@ def explain_ml(row):
 comparison["Why_ML_Flagged"] = comparison.apply(explain_ml, axis=1)
 
 # -------------------------------------------------
-# EXECUTIVE METRICS
+# SAFE METRIC HELPER
 # -------------------------------------------------
-total_campaigns = len(comparison)
-live_campaigns = (comparison["Campaign_Status"] == "LIVE").sum()
-ended_campaigns = (comparison["Campaign_Status"] == "ENDED").sum()
+def safe_sum(df, column):
+    return df[column].sum() if column in df.columns else 0
 
-total_budget = comparison["Total_Budget"].sum()
-total_spend = comparison["Spend_to_Date"].sum()
-total_remaining = comparison["Remaining_Budget"].sum()
-total_predicted_impact = comparison["Predicted_Impact_Amount"].sum()
+def safe_metric(metric_name):
+    result = summary.loc[summary["Metric"] == metric_name, "Value"]
+    return result.values[0] if not result.empty else "N/A"
 
-ml_mae = summary.loc[
-    summary["Metric"] == "ML Validation MAE", "Value"
-].values[0]
-
-last_refresh = summary.loc[
-    summary["Metric"] == "LAST_REFRESH_UTC", "Value"
-].values[0]
+last_refresh = safe_metric("LAST_REFRESH_UTC")
+ml_mae = safe_metric("ML Validation MAE")
 
 # -------------------------------------------------
 # SIDEBAR NAVIGATION
@@ -116,16 +121,12 @@ page = st.sidebar.radio(
 if page == "Executive Summary":
     st.title("📊 PaceSmart – Executive Summary")
 
-    # -------------------------------------------------
-    # STATUS FILTER (NEW)
-    # -------------------------------------------------
     status_filter = st.radio(
         "Campaign Status",
         ["All", "LIVE", "ENDED"],
         horizontal=True
     )
 
-    # Apply filter
     if status_filter == "LIVE":
         filtered = comparison[comparison["Campaign_Status"] == "LIVE"]
     elif status_filter == "ENDED":
@@ -133,39 +134,31 @@ if page == "Executive Summary":
     else:
         filtered = comparison.copy()
 
-    # -------------------------------------------------
-    # EXECUTIVE METRICS (UPDATED TO USE FILTERED)
-    # -------------------------------------------------
     total_campaigns = len(filtered)
     live_campaigns = (filtered["Campaign_Status"] == "LIVE").sum()
     ended_campaigns = (filtered["Campaign_Status"] == "ENDED").sum()
 
-    total_budget = filtered["Total_Budget"].sum()
-    total_spend = filtered["Spend_to_Date"].sum()
-    total_remaining = filtered["Remaining_Budget"].sum()
-    total_risk = filtered["Budget_At_Risk"].sum()
+    total_budget = safe_sum(filtered, "Total_Budget")
+    total_spend = safe_sum(filtered, "Spend_to_Date")
+    total_remaining = safe_sum(filtered, "Remaining_Budget")
+    total_predicted_impact = safe_sum(filtered, "Predicted_Impact_Amount")
 
-    # -------------------------------------------------
-    # DISPLAY METRICS
-    # -------------------------------------------------
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Total Campaigns", total_campaigns)
     c2.metric("Live Campaigns", live_campaigns)
     c3.metric("Ended Campaigns", ended_campaigns)
-    c4.metric(
-        "ML Accuracy",
-        f"{summary.loc[summary['Metric']=='ML Validation MAE','Value'].values[0]:.4f}"
-    )
+    c4.metric("ML Accuracy (MAE)", f"{ml_mae}")
 
     c5, c6, c7, c8 = st.columns(4)
     c5.metric("Total Budget", f"${total_budget:,.0f}")
     c6.metric("Spend to Date", f"${total_spend:,.0f}")
     c7.metric("Remaining Budget", f"${total_remaining:,.0f}")
-    c8.metric("Predicted Impact", f"${total_risk:,.0f}")
+    c8.metric("Predicted Financial Impact", f"${total_predicted_impact:,.0f}")
 
     st.info(f"🕒 Last refreshed (UTC): {last_refresh}")
+
 # =================================================
-# PAGE 2: EXCEL ONLY
+# PAGE 2: EXCEL VIEW
 # =================================================
 elif page == "Excel Pacing (Rule-Based)":
     st.title("📘 Excel Pacing – Current Status")
@@ -187,7 +180,7 @@ elif page == "Excel Pacing (Rule-Based)":
     )
 
 # =================================================
-# PAGE 3: ML PREDICTIVE VIEW
+# PAGE 3: ML VIEW
 # =================================================
 elif page == "Predictive Risk View (ML)":
     st.title("🔮 Predictive Risk Intelligence")
@@ -212,10 +205,7 @@ elif page == "Predictive Risk View (ML)":
 # =================================================
 elif page == "ML Feature Importance":
     st.title("📈 What the ML Model Looks At")
-
-    st.bar_chart(
-        features.set_index("Feature")["Importance"]
-    )
+    st.bar_chart(features.set_index("Feature")["Importance"])
 
 # =================================================
 # PAGE 5: ML EXPLANATION
