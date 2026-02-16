@@ -155,7 +155,7 @@ ml_preds = pd.DataFrame(
 )
 
 # ==================================================
-# STEP 4: SAFE MERGE (FIXES Total_Budget ERROR)
+# STEP 4: SAFE MERGE
 # ==================================================
 comparison = (
     excel_pacing
@@ -174,12 +174,11 @@ comparison = (
     .merge(ml_preds, on="Campaign_ID", how="left")
 )
 
-# Ensure correct Total_Budget column
 if "Total_Budget_meta" in comparison.columns:
     comparison["Total_Budget"] = comparison["Total_Budget_meta"]
 
 # ==================================================
-# STEP 5: RISK ENGINE
+# STEP 5: RISK ENGINE (FULLY FIXED)
 # ==================================================
 comparison["Risk_Score"] = (
     comparison["Predicted_Final_Deviation_%"].abs() / 20
@@ -203,7 +202,11 @@ choices = [
     "LOW – Stable"
 ]
 
-comparison["Risk_Level"] = np.select(conditions, choices)
+comparison["Risk_Level"] = np.select(
+    conditions,
+    choices,
+    default="LOW – Stable"
+)
 
 comparison["Early_Warning"] = np.where(
     (comparison["Risk_Score"] >= 50) &
