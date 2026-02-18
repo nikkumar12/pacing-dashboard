@@ -53,7 +53,7 @@ if "Total_Budget" in comparison.columns and "Spend_to_Date" in comparison.column
 else:
     comparison["Remaining_Budget"] = 0
 
-# Ensure required numeric columns exist
+# Ensure numeric columns exist
 for col in [
     "Predicted_Final_Deviation_%",
     "Risk_Score",
@@ -120,7 +120,7 @@ last_refresh = safe_metric("LAST_REFRESH_UTC")
 ml_mae = safe_metric("ML Validation MAE")
 
 # -------------------------------------------------
-# SIDEBAR
+# SIDEBAR NAVIGATION
 # -------------------------------------------------
 page = st.sidebar.radio(
     "Navigate",
@@ -159,7 +159,6 @@ if page == "Executive Summary":
     total_remaining = safe_sum(filtered, "Remaining_Budget")
     total_impact = safe_sum(filtered, "Predicted_Impact_Amount")
 
-    # KPI Indicator
     if total_impact > 1_000_000:
         impact_icon = "🔴"
     elif total_impact > 500_000:
@@ -179,30 +178,17 @@ if page == "Executive Summary":
 
     st.info(f"🕒 Last refreshed (UTC): {last_refresh}")
 
-    # Risk Distribution
     st.subheader("📊 Portfolio Risk Distribution")
     if "Risk_Level" in filtered.columns:
         st.bar_chart(filtered["Risk_Level"].value_counts())
 
-    # Top 10
     st.subheader("🔥 Top 10 High Risk Campaigns")
     if "Risk_Score" in filtered.columns:
         top10 = filtered.sort_values("Risk_Score", ascending=False).head(10)
     else:
         top10 = filtered.head(10)
 
-    st.dataframe(
-        top10[[
-            col for col in [
-                "Campaign_ID",
-                "DSP",
-                "Risk_Score",
-                "Risk_Level",
-                "Predicted_Impact_Amount"
-            ] if col in top10.columns
-        ]],
-        use_container_width=True
-    )
+    st.dataframe(top10, use_container_width=True)
 
 # =================================================
 # PAGE 2: EXCEL VIEW
@@ -225,15 +211,28 @@ elif page == "Excel Pacing (Rule-Based)":
     ]
 
     available_cols = [c for c in desired_cols if c in comparison.columns]
-    excel_view = comparison[available_cols]
+    excel_view = comparison[available_cols].copy()
+
+    # 🔎 SEARCH
+    search_text = st.text_input("🔎 Search Campaign / DSP", key="excel_search")
+
+    if search_text:
+        excel_view = excel_view[
+            excel_view.apply(
+                lambda row: search_text.lower() in str(row).lower(),
+                axis=1
+            )
+        ]
 
     if "Pacing_Status" in excel_view.columns:
-        excel_view = excel_view.style.applymap(
+        styled_excel = excel_view.style.applymap(
             highlight_pacing,
             subset=["Pacing_Status"]
         )
+    else:
+        styled_excel = excel_view
 
-    st.dataframe(excel_view, use_container_width=True)
+    st.dataframe(styled_excel, use_container_width=True)
 
 # =================================================
 # PAGE 3: ML VIEW
@@ -254,7 +253,18 @@ elif page == "Predictive Risk View (ML)":
     ]
 
     available_columns = [c for c in desired_columns if c in comparison.columns]
-    ml_view = comparison[available_columns]
+    ml_view = comparison[available_columns].copy()
+
+    # 🔎 SEARCH
+    search_text = st.text_input("🔎 Search Campaign / DSP", key="ml_search")
+
+    if search_text:
+        ml_view = ml_view[
+            ml_view.apply(
+                lambda row: search_text.lower() in str(row).lower(),
+                axis=1
+            )
+        ]
 
     if "Risk_Score" in ml_view.columns:
         ml_view = ml_view.sort_values("Risk_Score", ascending=False)
@@ -278,6 +288,7 @@ elif page == "Predictive Risk View (ML)":
 elif page == "ML Feature Importance":
 
     st.title("📈 What the ML Model Looks At")
+
     if "Feature" in features.columns and "Importance" in features.columns:
         st.bar_chart(features.set_index("Feature")["Importance"])
 
@@ -291,14 +302,14 @@ elif page == "How ML Works":
     st.markdown("""
 ### Excel
 - Linear projection
-- Reactive alerts
-- No behavioral learning
+- Reactive monitoring
+- No historical learning
 
 ### PaceSmart ML
 - Learns from ended campaigns
-- Detects acceleration & momentum shifts
+- Detects acceleration & momentum
 - Predicts final deviation %
-- Converts deviation into risk score
+- Converts deviation to risk score
 - Quantifies financial impact
 - Enables proactive intervention
 """)
