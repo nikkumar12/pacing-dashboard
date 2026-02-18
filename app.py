@@ -37,27 +37,32 @@ comparison, features, summary = load_data()
 today_utc = datetime.now(timezone.utc).date()
 
 if "Campaign_Status" not in comparison.columns:
-    comparison["Campaign_Status"] = np.where(
-        pd.to_datetime(comparison["Flight_End_Date"]).dt.date >= today_utc,
-        "LIVE",
-        "ENDED"
+    if "Flight_End_Date" in comparison.columns:
+        comparison["Campaign_Status"] = np.where(
+            pd.to_datetime(comparison["Flight_End_Date"]).dt.date >= today_utc,
+            "LIVE",
+            "ENDED"
+        )
+    else:
+        comparison["Campaign_Status"] = "UNKNOWN"
+
+if "Total_Budget" in comparison.columns and "Spend_to_Date" in comparison.columns:
+    comparison["Remaining_Budget"] = (
+        comparison["Total_Budget"] - comparison["Spend_to_Date"]
     )
+else:
+    comparison["Remaining_Budget"] = 0
 
-comparison["Remaining_Budget"] = (
-    comparison["Total_Budget"] - comparison["Spend_to_Date"]
-)
-
-safe_numeric_cols = [
+# Ensure required numeric columns exist
+for col in [
     "Predicted_Final_Deviation_%",
     "Risk_Score",
     "Predicted_Impact_Amount"
-]
-
-for col in safe_numeric_cols:
-    if col in comparison.columns:
-        comparison[col] = comparison[col].fillna(0)
-    else:
+]:
+    if col not in comparison.columns:
         comparison[col] = 0
+    else:
+        comparison[col] = comparison[col].fillna(0)
 
 if "Risk_Level" not in comparison.columns:
     comparison["Risk_Level"] = "LOW – Stable"
@@ -152,15 +157,15 @@ if page == "Executive Summary":
     total_budget = safe_sum(filtered, "Total_Budget")
     total_spend = safe_sum(filtered, "Spend_to_Date")
     total_remaining = safe_sum(filtered, "Remaining_Budget")
-    total_predicted_impact = safe_sum(filtered, "Predicted_Impact_Amount")
+    total_impact = safe_sum(filtered, "Predicted_Impact_Amount")
 
-    # KPI Severity Indicator
-    if total_predicted_impact > 1_000_000:
-        impact_color = "🔴"
-    elif total_predicted_impact > 500_000:
-        impact_color = "🟠"
+    # KPI Indicator
+    if total_impact > 1_000_000:
+        impact_icon = "🔴"
+    elif total_impact > 500_000:
+        impact_icon = "🟠"
     else:
-        impact_color = "🟢"
+        impact_icon = "🟢"
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Total Campaigns", total_campaigns)
@@ -169,29 +174,32 @@ if page == "Executive Summary":
     c4.metric("Remaining Budget", f"${total_remaining:,.0f}")
 
     c5, c6 = st.columns(2)
-    c5.metric("ML Accuracy (MAE)", f"{ml_mae}")
-    c6.metric(
-        "Predicted Financial Impact",
-        f"{impact_color} ${total_predicted_impact:,.0f}"
-    )
+    c5.metric("ML Accuracy (MAE)", ml_mae)
+    c6.metric("Predicted Financial Impact", f"{impact_icon} ${total_impact:,.0f}")
 
     st.info(f"🕒 Last refreshed (UTC): {last_refresh}")
 
-    # Risk Distribution Chart
+    # Risk Distribution
     st.subheader("📊 Portfolio Risk Distribution")
-    risk_dist = filtered["Risk_Level"].value_counts()
-    st.bar_chart(risk_dist)
+    if "Risk_Level" in filtered.columns:
+        st.bar_chart(filtered["Risk_Level"].value_counts())
 
-    # Top 10 High Risk
+    # Top 10
     st.subheader("🔥 Top 10 High Risk Campaigns")
-    top10 = filtered.sort_values("Risk_Score", ascending=False).head(10)
+    if "Risk_Score" in filtered.columns:
+        top10 = filtered.sort_values("Risk_Score", ascending=False).head(10)
+    else:
+        top10 = filtered.head(10)
+
     st.dataframe(
         top10[[
-            "Campaign_ID",
-            "DSP",
-            "Risk_Score",
-            "Risk_Level",
-            "Predicted_Impact_Amount"
+            col for col in [
+                "Campaign_ID",
+                "DSP",
+                "Risk_Score",
+                "Risk_Level",
+                "Predicted_Impact_Amount"
+            ] if col in top10.columns
         ]],
         use_container_width=True
     )
@@ -203,7 +211,7 @@ elif page == "Excel Pacing (Rule-Based)":
 
     st.title("📘 Excel Pacing – Current Status")
 
-    excel_view = comparison[[
+    desired_cols = [
         "Campaign_ID",
         "DSP",
         "Campaign_Status",
@@ -214,14 +222,18 @@ elif page == "Excel Pacing (Rule-Based)":
         "Expected_Spend_Till_Date",
         "Remaining_Budget",
         "Pacing_Status"
-    ]]
+    ]
 
-    styled_excel = excel_view.style.applymap(
-        highlight_pacing,
-        subset=["Pacing_Status"]
-    )
+    available_cols = [c for c in desired_cols if c in comparison.columns]
+    excel_view = comparison[available_cols]
 
-    st.dataframe(styled_excel, use_container_width=True)
+    if "Pacing_Status" in excel_view.columns:
+        excel_view = excel_view.style.applymap(
+            highlight_pacing,
+            subset=["Pacing_Status"]
+        )
+
+    st.dataframe(excel_view, use_container_width=True)
 
 # =================================================
 # PAGE 3: ML VIEW
@@ -230,7 +242,7 @@ elif page == "Predictive Risk View (ML)":
 
     st.title("🔮 Predictive Risk Intelligence")
 
-    ml_view = comparison[[
+    desired_columns = [
         "Campaign_ID",
         "DSP",
         "Campaign_Status",
@@ -238,14 +250,25 @@ elif page == "Predictive Risk View (ML)":
         "Predicted_Final_Deviation_%",
         "Risk_Score",
         "Risk_Level",
-        "Predicted_Impact_Amount",
-        "Why_ML_Flagged"
-    ]].sort_values("Risk_Score", ascending=False)
+        "Predicted_Impact_Amount"
+    ]
 
-    styled_ml = ml_view.style \
-        .applymap(highlight_risk_level, subset=["Risk_Level"]) \
-        .applymap(risk_score_gradient, subset=["Risk_Score"]) \
-        .applymap(highlight_pacing, subset=["Pacing_Status"])
+    available_columns = [c for c in desired_columns if c in comparison.columns]
+    ml_view = comparison[available_columns]
+
+    if "Risk_Score" in ml_view.columns:
+        ml_view = ml_view.sort_values("Risk_Score", ascending=False)
+
+    styled_ml = ml_view.style
+
+    if "Risk_Level" in ml_view.columns:
+        styled_ml = styled_ml.applymap(highlight_risk_level, subset=["Risk_Level"])
+
+    if "Risk_Score" in ml_view.columns:
+        styled_ml = styled_ml.applymap(risk_score_gradient, subset=["Risk_Score"])
+
+    if "Pacing_Status" in ml_view.columns:
+        styled_ml = styled_ml.applymap(highlight_pacing, subset=["Pacing_Status"])
 
     st.dataframe(styled_ml, use_container_width=True)
 
@@ -255,7 +278,8 @@ elif page == "Predictive Risk View (ML)":
 elif page == "ML Feature Importance":
 
     st.title("📈 What the ML Model Looks At")
-    st.bar_chart(features.set_index("Feature")["Importance"])
+    if "Feature" in features.columns and "Importance" in features.columns:
+        st.bar_chart(features.set_index("Feature")["Importance"])
 
 # =================================================
 # PAGE 5: ML EXPLANATION
@@ -268,14 +292,14 @@ elif page == "How ML Works":
 ### Excel
 - Linear projection
 - Reactive alerts
-- No historical learning
+- No behavioral learning
 
 ### PaceSmart ML
 - Learns from ended campaigns
-- Detects acceleration & behavioral shifts
+- Detects acceleration & momentum shifts
 - Predicts final deviation %
-- Converts deviation to standardized risk score
-- Quantifies financial exposure
+- Converts deviation into risk score
+- Quantifies financial impact
 - Enables proactive intervention
 """)
 
